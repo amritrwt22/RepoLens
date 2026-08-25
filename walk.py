@@ -1,84 +1,90 @@
 import sys
 from pathlib import Path
+from collections import Counter
 
 root = Path(sys.argv[1])
 
-count=0
+count = 0
+in_node_modules = 0
+extensions = Counter()
+
 for path in root.rglob("*"):
     if path.is_file():
-        count+=1
-        
-print(f"total files: {count}")
+        count += 1
+        if "node_modules" in path.parts:
+            in_node_modules += 1
+        extensions[path.suffix] += 1
+
+print(f"total files:      {count}")
+print(f"in node_modules:  {in_node_modules}")
+print()
+
+for ext, n in extensions.most_common(10):
+    print(f"{ext or '(none)':10} {n}")
+    
+    
+    
+# ---------------- WHAT THIS SCRIPT GIVES ----------------
+# Takes a folder path from the command line and recursively analyzes it.
+#
+# Output:
+#   1. Total number of files
+#   2. Number of files inside node_modules
+#   3. Top 10 most common file extensions
 
 
-# counting all files 
-# total files: 69052
+# (venv) (base) amrit@Amrittts-Macbook-Air repolens % python walk.py ~/Desktop/projects/WorkWave-main                    
+# total files:      69052
+# in node_modules:  68121
 
-import sys
-from pathlib import Path
+# .js        36840
+# .ts        7613
+# .json      7573
+# .map       4725
+# .md        2797
+# (none)     2693
+# .svg       2180
+# .mjs       1898
+# .mts       1113
+# .yml       260
+# (venv) (base) amrit@Amrittts-Macbook-Air repolens % 
 
-root = Path(sys.argv[1])
-
-count=0
-for path in root.rglob("*"):
-    if path.is_file():
-        count+=1
-        
-print(f"total files: {count}")
 
 
-# ---------------- EXPLANATION ----------------
-# sys:
-#   Built-in Python module for interacting with the system/interpreter.
-#   sys.argv contains command-line arguments.
-#
-# pathlib:
-#   Python module for working with file and directory paths.
-#   Path represents a filesystem path and provides methods like
-#   is_file(), is_dir(), rglob(), etc.
-#
-# sys.argv[1]:
-#   Gets the folder path provided when running the script.
-#   Example:
-#       python count.py /Users/amrit/project
-#       sys.argv[1] -> "/Users/amrit/project"
-#
-# Path(sys.argv[1]):
-#   Converts the string path into a Path object.
-#
-# root.rglob("*"):
-#   Recursively finds everything (files + directories) inside root
-#   and all its subdirectories.
-#
-# path.is_file():
-#   Checks whether the current path is a file.
-#
-# count += 1:
-#   Increases the file counter whenever a file is found.
-#
-# f"...{count}":
-#   f-string; inserts the value of count into the output string.
-#
-#
-# FLOW:
-#
+
 # User runs:
-#       python count.py /some/folder
-#                    ↓
-#              sys.argv[1]
-#                    ↓
-#          Path("/some/folder")
-#                    ↓
-#             root.rglob("*")
-#                    ↓
-#       Find files + directories recursively
-#                    ↓
-#          ┌─────────┴─────────┐
-#          ↓                   ↓
-#        File               Directory
-#          ↓                   ↓
-#     count += 1             Ignore
-#          ↓
-#        Repeat
-#          ↓
-#     Print total files
+# python count.py /some/folder
+#             ↓
+#       sys.argv[1]
+#             ↓
+#      Path("/some/folder")
+#             ↓
+#       root.rglob("*")
+#             ↓
+#    Find everything recursively
+#             ↓
+#        Is it a file?
+#         ↙         ↘
+#       NO           YES
+#       ↓             ↓
+#     Ignore       count += 1
+#                     ↓
+#           Is node_modules?
+#              ↙          ↘
+#            YES          NO
+#             ↓            ↓
+#    in_node_modules += 1
+#                     ↓
+#            Get path.suffix
+#                     ↓
+#        extensions[suffix] += 1
+#                     ↓
+#                  Repeat
+#                     ↓
+#           Print statistics
+#                     ↓
+#     ┌──────────────────────────┐
+#     │ Total files              │
+#     │ Files in node_modules    │
+#     │ Top 10 file extensions   │
+#     └──────────────────────────┘
