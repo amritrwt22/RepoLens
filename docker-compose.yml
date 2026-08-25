@@ -1,0 +1,32 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: repolens-db
+    environment:
+      POSTGRES_USER: repolens
+      POSTGRES_PASSWORD: repolens
+      POSTGRES_DB: repolens
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+# services: — the list of containers we want. We only need one.
+# db: — our name for it. Could be anything.
+# image: — which pre-built box to download. This one = Postgres 16 + pgvector already installed.
+# container_name: — the name shown in Docker, so it's not a random string.
+# environment: — settings passed into the box on first boot. Here: create a user repolens, password repolens, and an empty database called repolens.
+# ports: "5433:5432" — left = your Mac, right = inside the box. Postgres always listens on 5432 inside. We expose it on your Mac as 5433 so it never collides with a Postgres you might install later.
+# volumes: pgdata:/var/lib/postgresql/data — containers forget everything when deleted. This maps Postgres's data folder to storage that lives outside the box, so your data survives restarts.
+# volumes: at the bottom — declares that pgdata storage exists.
+
+
+
+# docker compose up -d
+# docker compose ps
+# up = start it, -d = detached (runs in background, gives your terminal back)
+# First run downloads the image — may take a minute
+# ps = show what's running

@@ -1,0 +1,29 @@
+# Personal notes — not part of the codebase
+docs/
+roadmap.md
+
+# Secrets — API keys must never reach GitHub
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Node / React
+node_modules/
+dist/
+build/
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Uploaded repos + temp extraction
+uploads/
+tmp/
