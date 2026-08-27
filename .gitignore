@@ -5,6 +5,7 @@ roadmap.md
 # Secrets — API keys must never reach GitHub
 .env
 .env.*
+!.env.example
 
 # Python
 __pycache__/
