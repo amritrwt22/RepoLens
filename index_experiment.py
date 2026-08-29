@@ -12,10 +12,17 @@ import sys
 import time
 import math
 from pathlib import Path
+import logging
 
 from walk import find_source_files
 from chunker import chunk_text
 from embedder import Embedder
+
+logging.basicConfig(
+    level = logging.INFO,
+    format = "%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 
 BATCH_SIZE = 20

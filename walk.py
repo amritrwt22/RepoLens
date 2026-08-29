@@ -10,6 +10,9 @@ import sys
 import os
 from pathlib import Path
 from collections import Counter
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Directories that never contain source worth indexing.
 # Dependencies, build output, caches, version control.
@@ -60,14 +63,14 @@ def find_source_files(root):
                 continue
 
             if path.stat().st_size > MAX_FILE_BYTES:
-                print(f"skip (too big):  {path}", file=sys.stderr)
+                logger.warning("skipping oversized file: %s", path)
                 continue
 
             try:
                 content = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 # The only reliable binary check: try decoding, see if it blows up.
-                print(f"skip (not text): {path}", file=sys.stderr)
+                logger.warning("skipping non-text file: %s", path)
                 continue
 
             yield {

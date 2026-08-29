@@ -5,6 +5,7 @@
 # Notes: docs/03-embedder/embedder-class.md
 
 import math
+import logging
 
 from dotenv import load_dotenv
 from google import genai
@@ -12,6 +13,10 @@ from google.genai import types
 
 # Reads .env so genai.Client() can find GEMINI_API_KEY.
 load_dotenv()
+
+# one logger per module. name is embedder here, so every message this file
+# emmits is tagged with that automatically
+logger = logging.getLogger(__name__)
 
 
 # task_type tells the model what ROLE the text plays. There is no neutral
@@ -36,6 +41,9 @@ class Embedder:
 
     # Leading underscore = internal. Convention, not enforced.
     def _embed(self, texts, task_type):
+        
+        logger.debug("embedding %d texts, %d chars", len(texts), sum(len(t) for t in texts))
+        
         result = self.client.models.embed_content(
             model=self.model,
             contents=texts,
