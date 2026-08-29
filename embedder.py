@@ -9,6 +9,7 @@ import logging
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from retry import RetryPolicy
 
 # Reads .env so genai.Client() can find GEMINI_API_KEY.
 load_dotenv()
@@ -39,15 +40,19 @@ MAX_INPUT_CHARS = int(MAX_INPUT_TOKENS * CHARS_PER_TOKEN_MIN)   # 22,937
 class Embedder:
 
     # __init__ is the constructor. `self` is C++'s `this`, written out.
-    def __init__(self, client=None, model="gemini-embedding-001", dimension=768):
+    def __init__(self, client=None, model="gemini-embedding-001", dimension=768, retry=None):
         # Passing a client in is how a test swaps the real API for a fake.
         if client is None:
             client = genai.Client()
-
+            
+        if retry is None:
+            retry = RetryPolicy()
+        
         # Members are created here by assignment. No declaration elsewhere.
         self.client = client
         self.model = model
         self.dimension = dimension
+        self.retry = retry #retry
 
     # Leading underscore = internal. Convention, not enforced.
     def _embed(self, texts, task_type):
@@ -55,14 +60,14 @@ class Embedder:
         
         logger.debug("embedding %d texts, %d chars", len(texts), sum(len(t) for t in texts))
         
-        result = self.client.models.embed_content(
+        result = self.retry.run(lambda: self.client.models.embed_content(
             model=self.model,
             contents=texts,
             config=types.EmbedContentConfig(
                 output_dimensionality=self.dimension,
                 task_type=task_type,
             ),
-        )
+        ))
 
         # One request, one vector per input, same order as `texts`. gemini-embedding-001 does NOT normalise below 3072 dimensions
         # (|v| ~= 0.58 at 768), so we do it here — in the one place both documents and queries pass through.
