@@ -76,7 +76,6 @@ CREATE TABLE files (
 
     UNIQUE (repository_id, path)
 );
-CREATE INDEX ON files (repository_id);
 
 
 
@@ -136,4 +135,4 @@ CREATE TABLE code_chunks (
     UNIQUE(file_id, start_line) 
 );
 CREATE INDEX ON code_chunks (repository_id);
-CREATE INDEX ON code_chunks (file_id);
+
