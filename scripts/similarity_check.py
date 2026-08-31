@@ -5,11 +5,11 @@
 # on — that similar code lands closer together than unrelated code.
 #
 # Run from the repo root:  python -m scripts.similarity_check
-# (-m, not a direct path, so `from embedder import ...` resolves)
+# (-m, not a direct path, so `from pipeline.embedder import ...` resolves)
 
 import math
 
-from embedder import Embedder
+from pipeline.embedder import Embedder
 
 
 # Five short snippets. Two are about authentication, the rest are not.
