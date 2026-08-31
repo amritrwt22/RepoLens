@@ -1,6 +1,7 @@
 # Personal notes — not part of the codebase
 docs/
 roadmap.md
+CLAUDE.md
 
 # Secrets — API keys must never reach GitHub
 .env
