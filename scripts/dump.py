@@ -4,6 +4,7 @@
 # Consumes the find_source_files() generator and prints each yielded dict
 # as it arrives. Nothing is held in memory except the file currently
 # being printed — see docs/generators-and-yield.md.
+# Run from the repo root:  python -m scripts.dump <path-to-repo>
 
 import sys
 from pathlib import Path

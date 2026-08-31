@@ -9,7 +9,7 @@
 #
 # Uses 20 texts per test, so the whole script costs ~40 requests worst case.
 #
-# Run:  python batching_test.py
+# Run from the repo root:  python -m scripts.batching_test
 
 import time
 

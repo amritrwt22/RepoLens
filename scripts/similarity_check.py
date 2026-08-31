@@ -4,7 +4,8 @@
 # count, right length. This proves the thing the product actually depends
 # on — that similar code lands closer together than unrelated code.
 #
-# Run:  python similarity_check.py
+# Run from the repo root:  python -m scripts.similarity_check
+# (-m, not a direct path, so `from embedder import ...` resolves)
 
 import math
 
