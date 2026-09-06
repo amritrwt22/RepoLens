@@ -4,6 +4,24 @@
 # It never walks, chunks or embeds, and it never creates a connection — it is handed one.
 # That way the same code works from a script today and from a pooled web request at later stage.
 
+from pgvector.psycopg import register_vector # teaches psycopg the vector type
+
+def prepare_connection(conn):
+    """Make one connection ready for storing vectors. Call once after connecting.
+    
+      Every type in Postgres has a numeric id, assigned when the extension is installed
+      in database. So the vector might be type 16485 on my db and something else on other.
+      So to identify the data type, our program needs to know the id of the datatype.
+      
+      register_vector asks the db server for the vector type's id on THIS connection
+      and teaches psycopg to convert a python list to and from it. It applies to one 
+      connection, not to program - a new connection needs it again.
+      
+    """
+    register_vector(conn)
+
+
+
 def store_repository(conn, name):
     """Create the row for one repository and return its generated id.
 
