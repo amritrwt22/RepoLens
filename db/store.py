@@ -107,6 +107,48 @@ def store_chunks(conn, repo_id, chunks):
             """,
             rows,
         )
+        
+def finish_repository(conn, repo_id, file_count, chunk_count, total_lines):
+    """Mark one repository complete and fill in the counts left NULL at insert.
+    The counts come from index.py, not from db query which would cost 3 extra queries.
+    """
+    
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE repositories 
+                SET status = 'ready',
+                file_count = %s,
+                chunk_count = %s,
+                total_lines = %s,
+                indexed_at = now()
+            WHERE id = %s
+            """,
+            (file_count, chunk_count, total_lines, repo_id),
+        )
+        
+def fail_repository(conn, repo_id, error):
+    """Record that an indexing run failed, and why.
+    
+    MUST run in a fresh transaction. The one failed is aborted and refuses
+    every statement - including this one - until its rolled back.
+    
+    'error' is a short human readable line, not a traceback: it is shown to person who uploaded
+    the repository. The traceback belongs in the logs.
+    """
+    
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE repositories
+                SET status = 'failed',
+                    error = %s
+                WHERE id = %s
+            """,
+            (error[:2000], repo_id), #truncate huge message
+        )
+
+    
     
     
 if __name__ == "__main__":
@@ -146,6 +188,9 @@ if __name__ == "__main__":
         
         store_chunks(conn, repo_id, fake_chunks)
         print("stored", len(fake_chunks), "chunks")
+        
+        finish_repository(conn, repo_id, file_count=1, chunk_count=2, total_lines=125)
+        print("marked ready")
         
         
         
