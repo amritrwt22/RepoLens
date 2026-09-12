@@ -70,6 +70,44 @@ def store_file(conn, repo_id, file):
         return cur.fetchone()[0]
     
     
+def store_chunks(conn, repo_id, chunks):
+    """Insert one batch of chunks, embedding included.
+    
+    Each chunk is a dict carrying a complete row.
+    {"file_id": 7, "start_line": 1, "end_line": 60,
+    "content": "---", "embedding": [0.021, -0.554, ...]}
+    
+    file_id lives inside each chunk because one batch of chunks may span
+    several files; repo_id is an argument because it is the same for the whole run.
+    
+    index.py attaches embeddings to chunks immediately after embedder
+    returns them, while positional correspondence still holds. Pair them
+    ASAP as soon as embedder produce them (the API guarantees results come back in input order).
+    From here on the pairing cannot get wrong, because nothing is left to pair.
+    
+    Returns nothing - no row references a chunk, so its id is never needed.
+    Raises on a duplicate (file_id, start_line) or a missing key: both mean an upstream bug,
+    and the whole repository rolls back.
+    """
+    
+    # One tuple per row, values in the same order as the INSERT's column list.
+    rows = []
+    for c in chunks:
+        rows.append((repo_id, c["file_id"], c["content"], c["start_line"], c["end_line"], c["embedding"]))
+        
+    with conn.cursor() as cur:
+        # executemany: ONE SQL string, many parameter sets. psycopg pipelines
+        # the whole batch instead of waiting for a reply per row, so the cost
+        # is ~one round trip for the batch whatever its size — not one per row.
+        cur.executemany(
+            """
+            INSERT INTO code_chunks
+                (repository_id, file_id, content, start_line, end_line, embedding)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            rows,
+        )
+    
     
 if __name__ == "__main__":
     import os
@@ -90,8 +128,24 @@ if __name__ == "__main__":
     
     
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        prepare_connection(conn)
+        
         repo_id = store_repository(conn, "WorkWave-main")
         print("inserted repository id:", repo_id)
         
         file_id = store_file(conn, repo_id, fake_file)
         print("file id:", file_id)
+        
+        
+        fake_chunks = [
+            {"file_id": file_id, "start_line": 1, "end_line": 60,
+             "content": "chunk_one", "embedding": [0.1] * 768},
+            {"file_id": file_id, "start_line": 51, "end_line": 110,
+             "content": "chunk two", "embedding": [0.2] * 768},
+        ]
+        
+        store_chunks(conn, repo_id, fake_chunks)
+        print("stored", len(fake_chunks), "chunks")
+        
+        
+        
