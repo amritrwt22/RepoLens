@@ -2,6 +2,7 @@
 
 # Reads the .env file and loads its contents into environment variables,
 # so that GEMINI_API_KEY becomes visible to the process.
+# Run from the repo root:  python -m scripts.smoke_embed
 from dotenv import load_dotenv
 
 # Google's official SDK. genai holds the client, types holds config objects.

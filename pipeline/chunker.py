@@ -78,7 +78,7 @@ if __name__ == "__main__":
     import sys
     from pathlib import Path
 
-    from walk import find_source_files
+    from pipeline.walk import find_source_files
 
     root = Path(sys.argv[1])
 

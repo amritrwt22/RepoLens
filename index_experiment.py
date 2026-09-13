@@ -14,9 +14,9 @@ import math
 from pathlib import Path
 import logging
 
-from walk import find_source_files
-from chunker import chunk_text
-from embedder import Embedder
+from pipeline.walk import find_source_files
+from pipeline.chunker import chunk_text
+from pipeline.embedder import Embedder
 
 logging.basicConfig(
     level = logging.INFO,
