@@ -14,21 +14,38 @@ from pathlib import Path         # handles ~, trailing slashes and relative path
 from dotenv import load_dotenv   # reads .env into os.environ 
 import psycopg                   # python to postgres driver
 
-from db.store import prepare_connection
+from db.store import prepare_connection, store_repository
 
 def index_repository(conn, root):
-    """index one repository that already exists as a folder on disk.
-    
-    Takes a path - not a URL, not a zip. Whatever the source is later (a Github clone,
-    an extracted upload), it becomes a folder first on disk, and this function 
-    doesnt change.
-    
+    """Index one repository that already exists as a folder on disk.
+
+    Takes a path - not a URL, not a zip. Whatever the source is later (a GitHub
+    clone, an extracted upload), it becomes a folder on disk first, and this
+    function doesn't change.
+
     'conn' is handed in, so the caller owns the transaction boundaries.
     """
     name = root.name        # repo name
-    
-    print("path:", root)
-    print("name:", name)
+
+    # Transaction 1: committed on its own, before any content work starts.
+    # If indexing fails later this row survives, so it can be marked 'failed'.
+    repo_id = store_repository(conn, name)
+    conn.commit()
+
+    print(f"indexing {name} (repository {repo_id})")
+
+
+
+
+
+
+
+
+
+
+
+
+
     
 if __name__ == "__main__":
     # argv[0] is the script itself, so a real argument means len >= 2.
