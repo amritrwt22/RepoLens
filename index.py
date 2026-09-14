@@ -18,7 +18,17 @@ from pipeline.walk import find_source_files
 from pipeline.chunker import chunk_text
 from pipeline.embedder import Embedder
 
+# A batch ends when either cap is hit. BATCH_SIZE limits how many chunks go in
+# one request; MAX_BATCH_CHARS limits the payload. The API's real limit is
+# 30,000 tokens/min, and at ~2.8 chars/token 28,000 chars is ~10,000 tokens -
+# a third of the budget. Ordinary code hits BATCH_SIZE first; dense long-line
+# files hit the character cap and produce smaller batches on their own.
+# avg token range: 2.7 - 4.3 chars/ token. (ex: ;=token with 1 char, a big function name = 30 chars/token)
+# we took least chars/token, so in case in repo we have all tokens with very less chars, creating
+# more tokens, then in worst case there can be 10k tokens only per 28k chars. (we are assuming that all tokens in repo has 2.7 chars, which is very less. meaning we are on safest zone, this limit can be exceed if we have avg char/token rate less than 2.7, but still there is 20k tokens headroom to handle it).
+# even in worst case when 1 char = 1 token. we get 28k tokens from our 28k characters limit : completely safe
 BATCH_SIZE = 20
+MAX_BATCH_CHARS = 28_000
 
 def index_repository(conn, root):
     """Index one repository that already exists as a folder on disk.
@@ -53,6 +63,9 @@ def index_repository(conn, root):
     total_lines = 0
     chunk_count = 0
     buffer = []      # accumulates the chunks
+    buffer_chars = 0 # running size of the buffer, in characters
+    
+    
     # One instance for the whole run: holds the API client and reuses the
     # HTTP connection across every embedding request.
     embedder = Embedder()
@@ -80,10 +93,12 @@ def index_repository(conn, root):
                 # file_id travels per chunk because one buffer spans several files.
                 buffer.append({**chunk, "file_id": file_id})
                 chunk_count += 1
+                buffer_chars += len(chunk["content"])
                 
-                if len(buffer) >= BATCH_SIZE:
+                if len(buffer) >= BATCH_SIZE or buffer_chars >= MAX_BATCH_CHARS:
                     flush(conn, repo_id, buffer, embedder)
                     buffer = []
+                    buffer_chars = 0
             
         # final flush when the no. of chunks left in buffer are < BATCH_SIZE
         if buffer:
@@ -222,8 +237,35 @@ if __name__ == "__main__":
 #
 #       - one file's content
 #       - that file's chunks from chunk_text (~1.2x the file; they overlap)
-#       - at most BATCH_SIZE chunks in the buffer
+#       - at most one batch of chunks in the buffer
 #
 #   The buffer is the only thing that accumulates, and it is emptied whenever
-#   it fills. The ceiling is the largest single file plus BATCH_SIZE - not the
+#   it fills. The ceiling is the largest single file plus one batch - not the
 #   size of the repository. A repo 100x larger costs the same.
+#
+#
+# WHY A BATCH IS CAPPED TWO WAYS
+#
+#   BATCH_SIZE caps the number of chunks. MAX_BATCH_CHARS caps the payload,
+#   and it is the one that matters: the API's binding limit is 30,000 TOKENS
+#   per minute, not requests.
+#
+#   Tokens cannot be counted locally, so they are estimated from characters.
+#   Measured on real chunks with the API's count_tokens: 2.8 - 4.3 chars per
+#   token. The ratio varies because a long identifier is one token of ~25
+#   characters, while `{a: 1}` is six tokens of one character each.
+#
+#   The cap uses the LOWEST ratio on purpose:
+#
+#       28,000 chars / 2.8  = 10,000 tokens     <- what we assume
+#       28,000 chars / 4.3  =  6,500 tokens     <- what it usually is
+#
+#   Assuming the worst ratio over-estimates the tokens, so batches flush early
+#   rather than late. Using 4.3 would allow 43,000 chars, which on
+#   punctuation-heavy code is 15,000 real tokens - half the minute's budget in
+#   a single request.
+#
+#   Counting chunks alone was the original design and is not enough: 20 chunks
+#   of dense, long-line source could exceed the whole per-minute budget in one
+#   call. Ordinary code still hits BATCH_SIZE first, so nothing changes for a
+#   normal repository - the character cap only bites where it needs to.
