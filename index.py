@@ -1,11 +1,10 @@
-# index.py - M4: the orchestrator. 
+# index.py - the orchestrator.
 #
-# Runs the whole pipeline against one repository and writes result to postgres:
-# walk -> chunk -> embed -> store. One repositories row, one file row per file,
-# one code_chunks row per chunk with its embedding.
-# 
-# The only file that knows the order of things, and the only one that 
-# decides what succeeds or fails together.
+# walk -> chunk -> embed -> store, against one repository on disk.
+# Writes one repositories row, one files row per file, and one code_chunks row
+# per chunk with its 768-float embedding.
+#
+# Design notes at the bottom of this file.
 
 import os                        # os.environ — the process's environment variables
 import sys                       # sys.argv — the command line, as a list of strings
@@ -22,7 +21,27 @@ from pipeline.embedder import Embedder
 BATCH_SIZE = 20
 
 def index_repository(conn, root):
-    """Index one repository that already exists as a folder on disk."""
+    """Index one repository that already exists as a folder on disk.
+
+    conn    an open psycopg connection. Handed in, so this function owns the
+            transaction boundaries but not the connection's lifetime.
+    root    a Path to the folder. Not a URL, not a zip - whatever the source is
+            later (a GitHub clone, an extracted upload), it becomes a folder
+            first and this function does not change.
+
+    Returns nothing. Writes rows, and leaves the repository row at 'ready' or
+    'failed'.
+
+    Steps:
+        1  create the repository row, commit it alone
+        2  for each file the walker yields:
+               store the file row, keep its generated file_id
+               chunk the file, stamp file_id onto each chunk
+               append to the buffer; flush whenever it reaches BATCH_SIZE
+        3  flush whatever is left in the buffer after the loop
+        4  fill in the counts, mark 'ready', commit
+        5  on any failure: roll back, mark 'failed' with the error, re-raise
+    """
     name = root.name        # repo name
 
     # Transaction 1: committed on its own, before any content work starts.
@@ -30,48 +49,66 @@ def index_repository(conn, root):
     repo_id = store_repository(conn, name)
     conn.commit()
     
-    # Transaction 2 opens at the first store_file below and stays open until
-    # every file and chunk is in. It is not committed in this part.
-    
     file_count = 0
     total_lines = 0
     chunk_count = 0
     buffer = []      # accumulates the chunks
-    embedder = Embedder() # one instance for whole indexing of a repo:
-    # it holds API client and reuses HTTP connection across all embedding req. 
+    # One instance for the whole run: holds the API client and reuses the
+    # HTTP connection across every embedding request.
+    embedder = Embedder()
     
-    # find_source_files is a GENERATOR - one file at a time, never all in repo.
-    for file in find_source_files(root):
-        # file = {"path":, "language":, "line_count":, "content":}
-        file_id = store_file(conn, repo_id, file)
-        file_count += 1
-        total_lines += file["line_count"]
+    
+    # --------------------happy path : transaction 2--------------
+    # either the whole repo is chunked and embedded or not at all. 
+    # try path for indexing the complete repo successfully. 
+    # trans open at first store_file (when first execute takes place)
+    # ends at commit below after finish repository
+    try:
         
-        # chunk_text returns a LIST - all chunks of this one file
-        for chunk in chunk_text(file["content"]):
-            # chunk = {"start_line":, "end_line":, "content":}
-            # ** unpacks chunk's keys into a new dict, then file_id is added:
-            # {"start_line":, "end_line":, "content":, "file_id":}
-            # file_id travels per chunk because one buffer spans several files.
-            buffer.append({**chunk, "file_id": file_id})
-            chunk_count += 1
+        # find_source_files is a GENERATOR - one file at a time, never all in repo.
+        for file in find_source_files(root):
+            # file = {"path":, "language":, "line_count":, "content":}
+            file_id = store_file(conn, repo_id, file)
+            file_count += 1
+            total_lines += file["line_count"]
             
-            if len(buffer) >= BATCH_SIZE:
-                flush(conn, repo_id, buffer, embedder)
-                buffer = []
-        
-    # final flush when the no. of chunks left in buffer are < BATCH_SIZE
-    if buffer:
-        flush(conn, repo_id, buffer, embedder)
-        
-    # Transaction 2 ends here, after storing all the chunk with their embeddings in db
-    # repo, files and chunks with embeddings are stored in db : all successfull
-    # now update the status from 'indexing' to 'ready' and upadte null columns in repository table and commit
-    finish_repository(conn, repo_id, file_count, chunk_count, total_lines)
-    conn.commit()
+            # chunk_text returns a LIST - all chunks of this one file
+            for chunk in chunk_text(file["content"]):
+                # chunk = {"start_line":, "end_line":, "content":}
+                # ** unpacks chunk's keys into a new dict, then file_id is added:
+                # {"start_line":, "end_line":, "content":, "file_id":}
+                # file_id travels per chunk because one buffer spans several files.
+                buffer.append({**chunk, "file_id": file_id})
+                chunk_count += 1
+                
+                if len(buffer) >= BATCH_SIZE:
+                    flush(conn, repo_id, buffer, embedder)
+                    buffer = []
+            
+        # final flush when the no. of chunks left in buffer are < BATCH_SIZE
+        if buffer:
+            flush(conn, repo_id, buffer, embedder)
+            
+        # Transaction 2 ends here, after storing all the chunk with their embeddings in db
+        # repo, files and chunks with embeddings are stored in db : all successfull
+        # now update the status from 'indexing' to 'ready' and upadte null columns in repository table and commit
+        finish_repository(conn, repo_id, file_count, chunk_count, total_lines)
+        conn.commit()
 
-    print(f"files: {file_count} lines: {total_lines} chunks: {chunk_count}")
-            
+        print(f"files: {file_count} lines: {total_lines} chunks: {chunk_count}")
+        
+    # ------------ failure path: transaction 3---------------------------
+    # Anything raised above leaves transaction 2 ABORTED - postgres refuses
+    # every further statement until it ends. So : ROLLBACK (all content in files and chunks tables deleted for this repository), 
+    # then record the failure in the row created in transaction 1 in repository table's [error] column. And mark indexing status as 'failed'
+    except Exception as e:
+        conn.rollback()
+        fail_repository(conn, repo_id, f"{type(e).__name__}: {e}")
+        conn.commit()
+
+        # Recording a failure is not handling it. Without this the process
+        # exits 0 and a failed run looks like a successful one.
+        raise
             
             
         
@@ -91,6 +128,12 @@ def flush(conn, repo_id, buffer, embedder):
     chunks and vectors line up by POSITION - vectors[i] is the embedding of
     buffer[i]. Nothing in the data links them, so they are paired here, the
     moment the embedder returns, while that guarantee still holds.
+
+    Steps:
+        1  pull the text out of each chunk
+        2  embed all of them in ONE request
+        3  attach each vector to its chunk, by position
+        4  store the batch
     """
     
     texts = []
@@ -110,21 +153,6 @@ def flush(conn, repo_id, buffer, embedder):
         
     
     
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     
 if __name__ == "__main__":
@@ -147,20 +175,55 @@ if __name__ == "__main__":
         index_repository(conn, root)
 
 
-    # A transaction opens at the first execute and ends at conn.commit(), or
-    # when the `with psycopg.connect(...)` block exits. commit() does NOT close
-    # the connection - one connection carries all three transactions below.
-
-
-# WHY THIS STAYS FLAT IN MEMORY
+# =============================================================================
+# DESIGN NOTES
+# =============================================================================
 #
-# find_source_files yields one file at a time, so the repository is never held
-# as a whole. At any moment memory holds:
+# This is the only file that knows the order of things, and the only one that
+# decides what succeeds or fails together. The pipeline modules know nothing
+# about the database; db/store.py knows nothing about the pipeline.
 #
-#   - one file's content
-#   - that file's chunks, from chunk_text (~1.2x the file, chunks overlap)
-#   - at most BATCH_SIZE chunks in the buffer
 #
-# The buffer is the only thing that accumulates, and it is emptied every time
-# it fills. So the ceiling is set by the largest single file plus BATCH_SIZE -
-# not by how big the repository is. A repo 100x larger costs the same.
+# THE THREE TRANSACTIONS
+#
+#   1  store_repository -> COMMIT
+#        The repository row is saved before any of the long work begins. If
+#        indexing dies five minutes later, a rollback discards the files and
+#        chunks - but this row is already committed, so it survives and can be
+#        marked 'failed'. Inside transaction 2 it would be discarded too, and
+#        there would be no trace the attempt ever happened.
+#
+#   2  every file + every chunk + finish_repository -> COMMIT
+#        All the content, or none of it. A half-indexed repository is worse
+#        than no repository: it reports itself present and answers questions
+#        from a third of the code.
+#
+#   3  on failure: ROLLBACK -> fail_repository -> COMMIT -> raise
+#        Transaction 2 is aborted and refuses every statement, so the rollback
+#        has to come first. Only then can a fresh transaction record the error.
+#
+#
+#        happy path                         failure path
+#        ----------                         ------------
+#        store_repository                   store_repository
+#        COMMIT              (1)            COMMIT              (1)
+#        files + chunks                     files + chunks ... boom
+#        finish_repository                  ROLLBACK        (2 discarded)
+#        COMMIT              (2)            fail_repository
+#        status = 'ready'                   COMMIT              (3)
+#                                           status = 'failed', error set
+#                                           raise
+#
+#
+# WHY MEMORY STAYS FLAT
+#
+#   find_source_files is a generator, so the repository is never held whole.
+#   At any moment memory holds:
+#
+#       - one file's content
+#       - that file's chunks from chunk_text (~1.2x the file; they overlap)
+#       - at most BATCH_SIZE chunks in the buffer
+#
+#   The buffer is the only thing that accumulates, and it is emptied whenever
+#   it fills. The ceiling is the largest single file plus BATCH_SIZE - not the
+#   size of the repository. A repo 100x larger costs the same.
