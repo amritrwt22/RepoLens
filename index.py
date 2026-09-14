@@ -14,7 +14,10 @@ from pathlib import Path         # handles ~, trailing slashes and relative path
 from dotenv import load_dotenv   # reads .env into os.environ 
 import psycopg                   # python to postgres driver
 
-from db.store import prepare_connection, store_repository
+from db.store import prepare_connection, store_repository, store_file
+from pipeline.walk import find_source_files
+
+
 
 def index_repository(conn, root):
     """Index one repository that already exists as a folder on disk.
@@ -31,8 +34,22 @@ def index_repository(conn, root):
     # If indexing fails later this row survives, so it can be marked 'failed'.
     repo_id = store_repository(conn, name)
     conn.commit()
+    
+    # Transaction 2 opens at the first store_file below and stays open until
+    # every file and chunk is in. It is not commited in this part
+    
+    file_count = 0
+    total_lines = 0
+    
+    for f in find_source_files(root):
+        # f = {"path":, "language":, "line_count":, "content":}
+        file_id = store_file(conn, repo_id, f)
+        file_count += 1
+        total_lines += f["line_count"]
+        
+    print(f"files: {file_count} lines: {total_lines}")
 
-    print(f"indexing {name} (repository {repo_id})")
+    
 
 
 
@@ -65,3 +82,8 @@ if __name__ == "__main__":
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         prepare_connection(conn)                     # teach it the vector type
         index_repository(conn, root)
+
+
+    # A transaction opens at the first execute and ends at conn.commit(), or
+    # when the `with psycopg.connect(...)` block exits. commit() does NOT close
+    # the connection - one connection carries all three transactions below.
