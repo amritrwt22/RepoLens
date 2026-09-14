@@ -14,9 +14,10 @@ from pathlib import Path         # handles ~, trailing slashes and relative path
 from dotenv import load_dotenv   # reads .env into os.environ 
 import psycopg                   # python to postgres driver
 
-from db.store import prepare_connection, store_repository, store_file
+from db.store import prepare_connection, store_repository, store_file, store_chunks, finish_repository, fail_repository
 from pipeline.walk import find_source_files
 from pipeline.chunker import chunk_text
+from pipeline.embedder import Embedder
 
 BATCH_SIZE = 20
 
@@ -36,6 +37,8 @@ def index_repository(conn, root):
     total_lines = 0
     chunk_count = 0
     buffer = []      # accumulates the chunks
+    embedder = Embedder() # one instance for whole indexing of a repo:
+    # it holds API client and reuses HTTP connection across all embedding req. 
     
     # find_source_files is a GENERATOR - one file at a time, never all in repo.
     for file in find_source_files(root):
@@ -54,16 +57,62 @@ def index_repository(conn, root):
             chunk_count += 1
             
             if len(buffer) >= BATCH_SIZE:
+                flush(conn, repo_id, buffer, embedder)
                 buffer = []
+        
+    # final flush when the no. of chunks left in buffer are < BATCH_SIZE
+    if buffer:
+        flush(conn, repo_id, buffer, embedder)
+        
+    # Transaction 2 ends here, after storing all the chunk with their embeddings in db
+    # repo, files and chunks with embeddings are stored in db : all successfull
+    # now update the status from 'indexing' to 'ready' and upadte null columns in repository table and commit
+    finish_repository(conn, repo_id, file_count, chunk_count, total_lines)
+    conn.commit()
 
     print(f"files: {file_count} lines: {total_lines} chunks: {chunk_count}")
             
             
             
         
+def flush(conn, repo_id, buffer, embedder):
+    """Embed one buffer of chunks and store them.
+
+    conn      an open psycopg connection
+    repo_id   int, from store_repository
+    buffer    list of dicts, each:
+                  {"start_line": 1, "end_line": 60,
+                   "content": "<60 lines>", "file_id": 7}
+    embedder  an Embedder instance - holds the API client, created once per run
+
+    Returns nothing. Mutates buffer: each dict gains an "embedding" key, a list
+    of 768 floats.
+
+    chunks and vectors line up by POSITION - vectors[i] is the embedding of
+    buffer[i]. Nothing in the data links them, so they are paired here, the
+    moment the embedder returns, while that guarantee still holds.
+    """
+    
+    texts = []
+    for chunk in buffer:
+        texts.append(chunk["content"])
+        
+    # one HTTP request for the whole buffer
+    vectors = embedder.embed_documents(texts)
+    
+    # attach each vector to its chunk - after this there is one structure,
+    # not two lists that could drift apart
+    for i in range(len(buffer)):
+        buffer[i]["embedding"] = vectors[i]
+        
+    store_chunks(conn, repo_id, buffer)
+        
+        
+    
+    
     
 
-    
+
 
 
 
