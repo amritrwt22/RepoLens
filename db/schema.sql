@@ -18,7 +18,7 @@ file_count chunk_count total_lines.         (these 3 comes when indexing finishe
 uploaded_at indexed_at                      (set when status=queued & status=ready)
 error                                       (tells why chunking failed)
 
-Queries: see docs/01-schema_db_cosine_similarity/schema-design.md
+Queries: see docs/01-schema_db_similarity_search/schema-design.md
 
 Indexes: none needed
 Every query on this table is WHERE id = $1.
@@ -54,7 +54,7 @@ language line_count           (computed by walker, given in the dict)
 
 content                       (whole file's text, we dont store repo, only files, so if someone wishes to see the complete file can use this)
 
-Queries: see docs/01-schema_db_cosine_similarity/schema-design.md
+Queries: see docs/01-schema_db_similarity_search/schema-design.md
 
 INDEX:
 This is the first index we've added that isn't automatic, and it's justified by the language-breakdown and file-tree queries — both filter by repository_id, and neither can use the primary key.
