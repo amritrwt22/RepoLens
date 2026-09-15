@@ -30,7 +30,7 @@ def search_chunks(conn, repo_id, query_vector, k=8):
         cur.execute(
             """
             SELECT c.id, f.path, c.start_line, c.end_line, c.content,
-            c.embedding <=> %s AS distance
+            c.embedding <=> %s::vector AS distance
             
             FROM code_chunks c
             JOIN files f ON c.file_id = f.id
