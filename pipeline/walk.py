@@ -28,7 +28,7 @@ LANGUAGES = {
     ".ts": "TypeScript", ".tsx": "TypeScript", ".java": "Java",
     ".go": "Go", ".rs": "Rust", ".c": "C", ".cpp": "C++",
     ".h": "C", ".rb": "Ruby", ".php": "PHP", ".cs": "C#",
-    ".sql": "SQL",
+    ".sql": "SQL", ".md": "Markdown",
 }
 
 # Anything bigger is a minified bundle, generated code, or a lockfile.
@@ -151,7 +151,7 @@ if __name__ == "__main__":
 #          ▼
 #   ┌───────────────────────┐
 #   │ known extension?      │──── no ───▶ skip (silent)
-#   │ LANGUAGES.get(suffix) │             .svg .png .md .json
+#   │ LANGUAGES.get(suffix) │             .svg .png .json .lock
 #   └───────────────────────┘
 #          │ yes
 #          ▼
