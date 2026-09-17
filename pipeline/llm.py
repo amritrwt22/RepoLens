@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class Llm:
     
-    def __init__(self, client=None, model="gemini-3.6-flash", temperature=0, retry=None):
+    def __init__(self, client=None, model="gemini-3.5-flash-lite", temperature=0, retry=None):
         if client is None:
             client = genai.Client()   # handle to api, holds https sockets to google
         
@@ -34,7 +34,7 @@ class Llm:
         self.model = model
         self.temperature = temperature
         
-    def generate(self, prompt):
+    def generate(self, prompt, system_instruction=None):
         """Send one finished prompt to the model and return its reply.
 
         IN
@@ -50,7 +50,10 @@ class Llm:
         response = self.retry.run(lambda: self.client.models.generate_content(
             model = self.model,
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=self.temperature),
+            config=types.GenerateContentConfig(
+                temperature=self.temperature,
+                system_instruction=system_instruction,
+            ),
         ))
         
         # usage_metadata is what each call cost. Logged rather than returned,
