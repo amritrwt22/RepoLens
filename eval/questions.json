@@ -1,0 +1,95 @@
+{
+  "lookup": [
+    { "id": "walk-skip",
+      "q": "where does the walker skip directories?",
+      "files": ["pipeline/walk.py"] },
+
+    { "id": "walk-maxsize",
+      "q": "what is the largest file the walker will index?",
+      "files": ["pipeline/walk.py"] },
+
+    { "id": "chunk-size",
+      "q": "how many lines is a chunk and how much do they overlap?",
+      "files": ["pipeline/chunker.py"] },
+
+    { "id": "prepare-connection",
+      "q": "what does prepare_connection do?",
+      "files": ["db/store.py", "docs/07-storage/store-functions.md"] },
+
+    { "id": "search-query",
+      "q": "what SQL runs to find the nearest chunks?",
+      "files": ["db/search.py", "db/schema.sql"] },
+
+    { "id": "fail-path",
+      "q": "what happens if indexing fails halfway through?",
+      "files": ["index.py", "docs/07-storage/transactions-and-failure.md"] }
+  ],
+
+  "rambling": [
+    { "id": "jitter-rambling",
+      "q": "can u explain if we have used jitter and why and where and how in detail, idk what jitter is so explain first what jitter is",
+      "files": ["pipeline/retry.py"] },
+
+    { "id": "batching-rambling",
+      "q": "i dont really get the batching thing, like what decides when a batch gets sent off and why do we even need batches in the first place",
+      "files": ["index.py"] },
+
+    { "id": "pipeline-rambling",
+      "q": "im new to this repo, can someone walk me through what actually happens from the moment a repo is uploaded until its searchable",
+      "files": ["index.py", "docs/00-rag_pipeline/rag-pipeline.md"] },
+
+    { "id": "answer-rambling",
+      "q": "so once we have the chunks what happens next, how does that turn into something a person can read with the file links and everything",
+      "files": ["answer.py", "docs/13-answering/answering-code.md"] }
+  ],
+
+  "identifier": [
+    { "id": "max-batch-chars",
+      "q": "what is MAX_BATCH_CHARS set to and why",
+      "files": ["index.py"] },
+
+    { "id": "task-type",
+      "q": "what is CODE_RETRIEVAL_QUERY used for",
+      "files": ["pipeline/embedder.py", "retrieve.py"] },
+
+    { "id": "register-vector",
+      "q": "what does register_vector do",
+      "files": ["db/store.py"] },
+
+    { "id": "skip-dirs",
+      "q": "what is in SKIP_DIRS",
+      "files": ["pipeline/walk.py"] }
+  ],
+
+  "conceptual": [
+    { "id": "why-cosine",
+      "q": "why did we choose cosine distance instead of euclidean?",
+      "files": ["docs/01-schema_db_similarity_search/cosine-distance-and-trigonometry.md", "db/schema.sql"] },
+
+    { "id": "why-denormalise",
+      "q": "why is repository_id stored on code_chunks when it could be reached through files?",
+      "files": ["db/schema.sql", "docs/01-schema_db_similarity_search/schema-design.md"] },
+
+    { "id": "vector-dims",
+      "q": "how many dimensions do the embeddings have and why that number?",
+      "files": ["db/schema.sql", "CLAUDE.md", "pipeline/embedder.py"] },
+
+    { "id": "asymmetric-embedding",
+      "q": "why are questions and code embedded differently?",
+      "files": ["pipeline/embedder.py", "docs/03-embedder/embedder-class.md"] }
+  ],
+
+  "unanswerable": [
+    { "id": "billing",
+      "q": "how does billing work in this project?",
+      "files": [] },
+
+    { "id": "recommendation-engine",
+      "q": "how does the recommendation engine rank results?",
+      "files": [] },
+
+    { "id": "mobile-app",
+      "q": "how does the mobile app talk to the server?",
+      "files": [] }
+  ]
+}
