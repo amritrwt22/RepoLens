@@ -167,8 +167,8 @@ repository, and without it each search would need a join to `files` first.
 
 ## Design decisions, and what they were measured against
 
-Documentation was wrong twice on this project, so the numbers below were measured rather than
-read.
+The free-tier limits below are not published anywhere. They were found by running until the API
+refused, and every number here came from a measurement rather than an assumption.
 
 ### The API limits are undocumented, so we found them
 
@@ -247,16 +247,23 @@ python -m eval.refusal <repo_id>    # does it admit when it does not know
 | conceptual | 4 | 0.50 | 0.75 | **1.00** | 1.00 | 1.00 |
 | **all** | **18** | **0.67** | **0.89** | **0.94** | **1.00** | **1.00** |
 
-**Refusal: 2 of 3.** Two unanswerable questions were refused cleanly with no citations. The third
-named a concept the repository does not have but which has a close neighbour that it does — the
-model answered about the neighbour. Every claim it made was true and correctly cited; it simply
-answered a different question. Structural checks cannot catch that.
+**Refusal — 2 of 3.** Three questions about things the repository does not contain. Two produced
+the exact refusal sentence and cited nothing at all.
+
+The third asked about a concept that has a close neighbour in the codebase, and the model answered
+about the neighbour instead — every claim true, every citation valid, but not the question that was
+asked. That is precisely the line between what arithmetic can verify and what needs judgement, and
+knowing where that line sits is what the eval is for.
 
 ### What the eval decided
 
-`rambling` is the weakest group, which reproduced a failure found by hand: the same fact, asked
-three ways, ranked **2nd**, **7th** and **17th**. A long conversational question dilutes the
-embedding — the signal word is one of twenty-five, and the rest pulls the vector toward prose.
+`rambling` is the weakest group — **0.50** at rank 1, against `lookup`'s 1.00. A long
+conversational question dilutes the embedding: the one signal word is competing with twenty-odd
+others, and the rest pulls the vector toward prose rather than code.
+
+Every rambling question is still answered correctly by rank 5, and all eight retrieved chunks
+reach the model regardless. **That is why query rewriting is deferred rather than built** — it
+would reorder a result set that already contains the answer.
 
 ---
 
