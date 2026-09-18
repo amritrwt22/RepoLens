@@ -21,6 +21,27 @@
 
 ---
 
+```mermaid
+graph TD
+    A[Repository] -->|153 files| B[walk]
+    B -->|60-line windows| C[chunk]
+    C -->|768-dim vectors| D[embed]
+    D --> DB[(Postgres + pgvector)]
+    Q[Question] --> QE[embed]
+    QE --> S[search]
+    DB -->|top 8 chunks| S
+    S --> P[prompt]
+    P --> G[Gemini]
+    G -->|writes citation numbers| V[validate]
+    V --> R[Cited answer]
+    DB -.->|path + lines| R
+```
+
+**The model only ever writes a number.** The file path and line range on every citation are read
+straight out of the database, so a citation cannot point at a file that does not exist.
+
+---
+
 ## What it looks like
 
 ```console
@@ -165,33 +186,12 @@ repository, and without it each search would need a join to `files` first.
 
 ---
 
-## Design decisions, and what they were measured against
+## Design decisions
 
-The free-tier limits below are not published anywhere. They were found by running until the API
-refused, and every number here came from a measurement rather than an assumption.
+### The embedding model
 
-### The API limits are undocumented, so we found them
-
-| Limit | Value | How |
-|---|---|---|
-| Requests | 100/min | ran until 429 |
-| Tokens | **30,000/min** | the binding constraint — this is why `MAX_BATCH_CHARS = 28_000` exists |
-| Input size | 8,192 tokens | silently truncated, and a normal-looking vector is returned |
-
-Quota recovers **all-or-nothing at ~60 seconds.** Measured three times: waiting 15s returns 0
-tokens of budget, 30s returns 0, 60s returns the full budget.
-
-**So retry waits for the boundary instead of backing off exponentially.** Exponential backoff is
-the right algorithm when recovery time is unknown; here it is known, and backing off either
-gives up too early or wastes the remainder of the minute.
-
-### The embedding model choice was not obvious
-
-`gemini-embedding-2` looked newer. It **collapses a list of inputs into one aggregated vector**
-and, with `Content` objects, issues one HTTP request per input — a single call with 100 texts
-consumed 100 requests of a 100-per-minute quota.
-
-`gemini-embedding-001` returns N vectors from N inputs in one request, and is 4.4× faster.
+`gemini-embedding-001` returns one vector per input from a single request, which is what
+chunk-level retrieval needs — every chunk gets its own point in the space.
 
 ### `task_type` has no neutral default
 
