@@ -9,7 +9,7 @@
 import sys
 from pathlib import Path
 
-from pipeline.walk import find_source_files
+from src.pipeline.walk import find_source_files
 
 root = Path(sys.argv[1])
 

@@ -45,7 +45,7 @@ straight out of the database, so a citation cannot point at a file that does not
 ## What it looks like
 
 ```console
-$ python -m answer 26 "how does retry decide how long to wait?"
+$ python -m src.services.answer 26 "how does retry decide how long to wait?"
 
 INFO pipeline.llm: generated: 5409 prompt tokens, 149 response tokens
 
@@ -68,7 +68,7 @@ How long the retry waits depends on which error came back:
 Ask it something the repository does not contain and it says so, rather than inventing an answer:
 
 ```console
-$ python -m answer 26 "how does billing work in this project?"
+$ python -m src.services.answer 26 "how does billing work in this project?"
 
 I don't have enough information in the available documents to answer this question.
 ```
@@ -101,8 +101,8 @@ arithmetic: anything outside the range is dropped before it is ever displayed.
 
 | Failure | Caught by |
 |---|---|
-| `[9]` cited when only 8 chunks were sent | `answer.py` — arithmetic |
-| An answer with no citation at all | `answer.py` — arithmetic |
+| `[9]` cited when only 8 chunks were sent | `src/services/answer.py` — arithmetic |
+| An answer with no citation at all | `src/services/answer.py` — arithmetic |
 | A path that does not exist | **impossible by construction** |
 | `[1]` cited for a claim that `[4]` supports | the eval set — needs judgement |
 
@@ -123,30 +123,30 @@ pip install -r requirements.txt
 cp .env.example .env         # then add your GEMINI_API_KEY
 
 docker compose up -d         # Postgres 16 + pgvector on port 5433
-psql postgresql://repolens:repolens@localhost:5433/repolens -f db/schema.sql
+psql postgresql://repolens:repolens@localhost:5433/repolens -f src/db/schema.sql
 ```
 
 Index a repository, then ask it things:
 
 ```bash
-python -m index ~/path/to/some-repo
+python -m src.services.index ~/path/to/some-repo
 # files: 153 lines: 14808 chunks: 355
 
 # find the id it was given
 psql postgresql://repolens:repolens@localhost:5433/repolens \
   -c "SELECT id, name, status, chunk_count FROM repositories ORDER BY id;"
 
-python -m answer <repo_id> "how does authentication work?"
+python -m src.services.answer <repo_id> "how does authentication work?"
 ```
 
 Retrieval alone, without spending a generation call:
 
 ```bash
-python -m retrieve <repo_id> "how does authentication work?"
+python -m src.services.retrieve <repo_id> "how does authentication work?"
 ```
 
 Everything runs with `-m` from the repository root — imports are absolute, so
-`python pipeline/walk.py` will not work.
+`python src/pipeline/walk.py` will not work.
 
 ---
 
@@ -165,12 +165,12 @@ Everything runs with `-m` from the repository root — imports are absolute, so
 
 | Stage | File | What it does |
 |---|---|---|
-| Walk | `pipeline/walk.py` | a generator yielding one file at a time — never loads the repository into memory |
-| Chunk | `pipeline/chunker.py` | 60-line windows with 10 lines of overlap |
-| Embed | `pipeline/embedder.py` | batched, normalised, retries on quota exhaustion |
-| Store | `db/store.py` | three tables, two transactions |
-| Search | `db/search.py` | one SQL query, cosine distance, `LIMIT 8` |
-| Answer | `answer.py` | assembles the prompt, validates the citations |
+| Walk | `src/pipeline/walk.py` | a generator yielding one file at a time — never loads the repository into memory |
+| Chunk | `src/pipeline/chunker.py` | 60-line windows with 10 lines of overlap |
+| Embed | `src/pipeline/embedder.py` | batched, normalised, retries on quota exhaustion |
+| Store | `src/db/store.py` | three tables, two transactions |
+| Search | `src/db/search.py` | one SQL query, cosine distance, `LIMIT 8` |
+| Answer | `src/services/answer.py` | assembles the prompt, validates the citations |
 
 ### Three tables
 
@@ -289,35 +289,43 @@ it, and here is the number that would change our mind."*
 ## Layout
 
 ```
-index.py            walk → chunk → embed → store
-retrieve.py         question → embed → search → cited chunks
-answer.py           chunks → prompt → model → cited answer
+src/                  everything Python imports
+  services/           complete workflows — the CLI entry points
+    index.py          walk → chunk → embed → store
+    retrieve.py       question → embed → search → cited chunks
+    answer.py         chunks → prompt → model → cited answer
 
-pipeline/
-  walk.py           generator over source files, prunes before descending
-  chunker.py        pure function — text in, line windows out
-  embedder.py       Gemini embedding client, batching and normalisation
-  llm.py            Gemini chat client
-  retry.py          429 vs 5xx vs 4xx, three different responses
+  pipeline/           single-purpose components
+    walk.py           generator over source files, prunes before descending
+    chunker.py        pure function — text in, line windows out
+    embedder.py       Gemini embedding client, batching and normalisation
+    llm.py            Gemini chat client
+    retry.py          429 vs 5xx vs 4xx, three different responses
 
-db/
-  schema.sql        three tables, with the reasoning in comments
-  store.py          six write functions
-  search.py         the one similarity query
+  db/                 everything that touches Postgres
+    schema.sql        three tables, with the reasoning in comments
+    store.py          six write functions
+    search.py         the one similarity query
 
 prompts/
-  _system.md        role, tone, rules, injection boundary, worked examples
-  ask.md            what differs for the Ask lens — 128 tokens against 859
+  _system.md          role, tone, rules, injection boundary, worked examples
+  ask.md              what differs for the Ask lens — 128 tokens against 859
 
 eval/
-  questions.json    21 questions, five groups, file-level ground truth
-  run.py            captures what retrieval returned, for scoring afterwards
-  refusal.py        does it admit when it does not know
+  questions.json      21 questions, five groups, file-level ground truth
+  run.py              captures what retrieval returned, for scoring afterwards
+  refusal.py          does it admit when it does not know
 ```
 
-`prompts/` is split because the rules are identical across lenses and only the task differs. The
-Ask lens file is 128 tokens against the shared file's 859 — a second lens duplicates almost
-nothing.
+Dependencies point one way: **services → pipeline → db**. A component never knows a workflow
+exists, which is why `chunker.py` can be tested with a string literal and swapped for tree-sitter
+without touching anything else.
+
+`prompts/` sits outside `src/` because nothing imports it — it is content, read at runtime by
+path, so a prompt change shows in a diff as a change to text rather than to code. It is split for
+the same reason `services/` and `pipeline/` are: the rules are identical across lenses and only
+the task differs. The Ask lens file is 128 tokens against the shared file's 859, so a second lens
+duplicates almost nothing.
 
 ---
 

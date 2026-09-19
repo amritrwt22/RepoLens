@@ -12,9 +12,9 @@ import sys                       # sys.argv — the command line, as a list of s
 from dotenv import load_dotenv   # reads .env into os.environ
 import psycopg                   # python to postgres driver
 
-from db.store import prepare_connection      # teaches one connection the vector type
-from db.search import search_chunks          # the <=> query
-from pipeline.embedder import Embedder       # question -> 768-float vector
+from src.db.store import prepare_connection      # teaches one connection the vector type
+from src.db.search import search_chunks          # the <=> query
+from src.pipeline.embedder import Embedder       # question -> 768-float vector
 
 
 def search(conn, embedder, repo_id, question, k=8):

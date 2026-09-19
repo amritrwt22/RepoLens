@@ -1,6 +1,6 @@
 # Retrieval eval - repo 26, k=8
 
-Run 2026-09-18 11:20
+Run 2026-09-19 11:21
 
 ## lookup
 

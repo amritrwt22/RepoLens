@@ -11,7 +11,7 @@
 
 from google import genai
 from google.genai import types          # GenerateContentConfig lives here
-from pipeline.retry import RetryPolicy
+from src.pipeline.retry import RetryPolicy
 
 from dotenv import load_dotenv          # reads .env into os.environ
 load_dotenv()                           # So genai.Client() can find GEMINI_API_KEY.
