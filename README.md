@@ -169,7 +169,7 @@ Everything runs with `-m` from the repository root — imports are absolute, so
 | Chunk | `src/pipeline/chunker.py` | 60-line windows with 10 lines of overlap |
 | Embed | `src/pipeline/embedder.py` | batched, normalised, retries on quota exhaustion |
 | Store | `src/db/store.py` | three tables, two transactions |
-| Search | `src/db/search.py` | one SQL query, cosine distance, `LIMIT 8` |
+| Search | `src/db/chunks.py` | one SQL query, cosine distance, `LIMIT 8` |
 | Answer | `src/services/answer.py` | assembles the prompt, validates the citations |
 
 ### Three tables
@@ -304,8 +304,9 @@ src/                  everything Python imports
 
   db/                 everything that touches Postgres
     schema.sql        three tables, with the reasoning in comments
-    store.py          six write functions
-    search.py         the one similarity query
+    store.py          every write in the project
+    chunks.py         reads on code_chunks — the similarity query
+    repositories.py   reads on repositories — names, counts, languages
 
 prompts/
   _system.md          role, tone, rules, injection boundary, worked examples

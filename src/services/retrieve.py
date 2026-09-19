@@ -13,7 +13,7 @@ from dotenv import load_dotenv   # reads .env into os.environ
 import psycopg                   # python to postgres driver
 
 from src.db.store import prepare_connection      # teaches one connection the vector type
-from src.db.search import search_chunks          # the <=> query
+from src.db.chunks import search_chunks          # the <=> query
 from src.pipeline.embedder import Embedder       # question -> 768-float vector
 
 
