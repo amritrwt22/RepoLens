@@ -9,7 +9,7 @@
 
 import math
 
-from pipeline.embedder import Embedder
+from src.pipeline.embedder import Embedder
 
 
 # Five short snippets. Two are about authentication, the rest are not.

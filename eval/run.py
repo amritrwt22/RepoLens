@@ -21,9 +21,9 @@ from pathlib import Path
 import psycopg
 from dotenv import load_dotenv
 
-from db.store import prepare_connection
-from pipeline.embedder import Embedder
-from retrieve import search
+from src.db.store import prepare_connection
+from src.pipeline.embedder import Embedder
+from src.services.retrieve import search
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE / "questions.json"

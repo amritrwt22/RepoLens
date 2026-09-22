@@ -25,10 +25,10 @@ from pathlib import Path
 import psycopg
 from dotenv import load_dotenv
 
-from answer import REFUSAL, answer
-from db.store import prepare_connection
-from pipeline.embedder import Embedder
-from pipeline.llm import Llm
+from src.services.answer import REFUSAL, answer
+from src.db.store import prepare_connection
+from src.pipeline.embedder import Embedder
+from src.pipeline.llm import Llm
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE / "questions.json"

@@ -1,10 +1,10 @@
-# db/search.py : the only module that reads chunks back out of Postgres.
+# src/db/chunks.py : reads on the code_chunks table.
 #
-# The mirror of store.py — that one writes, this one reads. It is handed a
-# connection and a query VECTOR, never a question. 
+# Writes go through store.py, which owns every insert in the project. Reads are
+# split per table, so anything asking a question of code_chunks lands here.
 #
-# Embedding the question belongs to the caller, so this module stays pure SQL and can be tested
-# without an API key.
+# Handed a connection and a query VECTOR, never a question — embedding belongs
+# to the caller, which keeps this module pure SQL and testable with no API key.
 
 def search_chunks(conn, repo_id, query_vector, k=8):
     """Find the k chunks in one repository closest to query_vector.

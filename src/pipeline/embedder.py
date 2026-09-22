@@ -9,7 +9,7 @@ import logging
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from pipeline.retry import RetryPolicy
+from src.pipeline.retry import RetryPolicy
 
 # Reads .env so genai.Client() can find GEMINI_API_KEY.
 load_dotenv()

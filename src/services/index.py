@@ -13,10 +13,10 @@ from pathlib import Path         # handles ~, trailing slashes and relative path
 from dotenv import load_dotenv   # reads .env into os.environ 
 import psycopg                   # python to postgres driver
 
-from db.store import prepare_connection, store_repository, store_file, store_chunks, finish_repository, fail_repository
-from pipeline.walk import find_source_files
-from pipeline.chunker import chunk_text
-from pipeline.embedder import Embedder
+from src.db.store import prepare_connection, store_repository, store_file, store_chunks, finish_repository, fail_repository
+from src.pipeline.walk import find_source_files
+from src.pipeline.chunker import chunk_text
+from src.pipeline.embedder import Embedder
 
 # A batch ends when either cap is hit. BATCH_SIZE limits how many chunks go in
 # one request; MAX_BATCH_CHARS limits the payload. The API's real limit is

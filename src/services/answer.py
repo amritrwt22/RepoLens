@@ -12,12 +12,13 @@
 #
 # Run it:  python -m answer <repo_id> "<question>"
 
-from retrieve import search
+from src.services.retrieve import search
 from pathlib import Path   # lets us build file paths without string juggling
 
-# prompts/ sits next to this file. __file__ is answer.py's own location, so
-# this points at the right folder no matter which directory you run from.
-PROMPTS = Path(__file__).parent/"prompts"
+# prompts/ sits at the repo root, this file is two levels down in src/services,
+# so walk up twice. Built from __file__ rather than a relative path, so it
+# resolves the same whichever directory the command is run from.
+PROMPTS = Path(__file__).parent.parent.parent / "prompts"
 
 import logging
 import re
@@ -183,9 +184,9 @@ def answer(conn, embedder, llm, repo_id, question, k=8, lens="ask"):
 import sys
 import os
 from dotenv import load_dotenv
-from pipeline.embedder import Embedder
-from pipeline.llm import Llm
-from db.store import prepare_connection
+from src.pipeline.embedder import Embedder
+from src.pipeline.llm import Llm
+from src.db.store import prepare_connection
 
 import psycopg
 
