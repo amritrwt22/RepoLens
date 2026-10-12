@@ -49,6 +49,10 @@ CREATE TABLE repositories (
 
 -- One row per index attempt. status = where the run is, conclusion = how it ended.
 -- conclusion stays NULL until status reaches 'completed'.
+--   success   the run indexed the repository
+--   skipped   already on that commit, so there was nothing to do
+--   failure   something broke; error holds the reason
+--   cancelled the run was stopped, or swept up after a hard kill
 -- from_sha NULL = this was the repo's first index.
 
 CREATE TABLE indexing_jobs (
@@ -61,7 +65,7 @@ CREATE TABLE indexing_jobs (
     status         text not null 
                    CHECK (status IN ('queued','in_progress','completed')),
     conclusion     text                   -- NULL until completed
-                   CHECK (conclusion IN ('success','failure','cancelled')),
+                   CHECK (conclusion IN ('success','failure','skipped','cancelled')),
 
     error          text,                  -- set only on failure
     started_at     timestamptz,           -- NULL while queued
