@@ -31,15 +31,15 @@ from pgvector.psycopg import register_vector # teaches psycopg the vector type
 
 def prepare_connection(conn):
     """Make one connection ready for storing vectors. Call once after connecting.
-    
+
       Every type in Postgres has a numeric id, assigned when the extension is installed
       in database. So the vector might be type 16485 on my db and something else on other.
       So to identify the data type, our program needs to know the id of the datatype.
-      
+
       register_vector asks the db server for the vector type's id on THIS connection
-      and teaches psycopg to convert a python list to and from it. It applies to one 
+      and teaches psycopg to convert a python list to and from it. It applies to one
       connection, not to program - a new connection needs it again.
-      
+
     """
     register_vector(conn)
 
@@ -90,7 +90,7 @@ def get_or_create_repository(conn, owner, repo):
             (owner, repo),
         )
         return cur.fetchone()
-    
+
 
 def start_job(conn, repo_id, from_sha, to_sha):
     """Record that an indexing run has started, and return the job's id.
@@ -125,7 +125,7 @@ def start_job(conn, repo_id, from_sha, to_sha):
             (repo_id, from_sha, to_sha),
         )
         return cur.fetchone()[0]
-    
+
 
 def delete_repository_content(conn, repo_id):
     """Delete every file of one repository. Its chunks go with them.
@@ -174,33 +174,33 @@ def store_file(conn, repo_id, file):
         # Same as above: (file_id,) out of the result, [0] to unwrap it.
         # Every chunk of this file needs this id.
         return cur.fetchone()[0]
-    
-    
+
+
 def store_chunks(conn, repo_id, chunks):
     """Insert one batch of chunks, embedding included.
-    
+
     Each chunk is a dict carrying a complete row.
     {"file_id": 7, "start_line": 1, "end_line": 60,
     "content": "---", "embedding": [0.021, -0.554, ...]}
-    
+
     file_id lives inside each chunk because one batch of chunks may span
     several files; repo_id is an argument because it is the same for the whole run.
-    
+
     index.py attaches embeddings to chunks immediately after embedder
     returns them, while positional correspondence still holds. Pair them
     ASAP as soon as embedder produce them (the API guarantees results come back in input order).
     From here on the pairing cannot get wrong, because nothing is left to pair.
-    
+
     Returns nothing - no row references a chunk, so its id is never needed.
     Raises on a duplicate (file_id, start_line) or a missing key: both mean an upstream bug,
     and the whole repository rolls back.
     """
-    
+
     # One tuple per row, values in the same order as the INSERT's column list.
     rows = []
     for c in chunks:
         rows.append((repo_id, c["file_id"], c["content"], c["start_line"], c["end_line"], c["embedding"]))
-        
+
     with conn.cursor() as cur:
         # executemany: ONE SQL string, many parameter sets. psycopg pipelines
         # the whole batch instead of waiting for a reply per row, so the cost
@@ -213,8 +213,8 @@ def store_chunks(conn, repo_id, chunks):
             """,
             rows,
         )
-        
-        
+
+
 def mark_job_completed(conn, job_id, conclusion, error=None):
     """Record that one indexing run has ended, and how it ended.
 
@@ -247,7 +247,8 @@ def mark_job_completed(conn, job_id, conclusion, error=None):
                SET status      = 'completed',
                    conclusion  = %s,
                    error       = %s,
-                   finished_at = now()
+                   -- clock_timestamp, not now(): now() is the transaction's start time
+                   finished_at = clock_timestamp()
              WHERE id = %s
             """,
             (conclusion, error[:2000] if error else None, job_id),
@@ -284,20 +285,21 @@ def mark_repository_indexed(conn, repo_id, commit_sha, file_count, chunk_count, 
                    file_count  = %s,
                    chunk_count = %s,
                    total_lines = %s,
-                   indexed_at  = now()
+                   -- clock_timestamp, not now(): now() is the transaction's start time
+                   indexed_at  = clock_timestamp()
              WHERE id = %s
             """,
             (commit_sha, file_count, chunk_count, total_lines, repo_id),
         )
-        
+
 
 if __name__ == "__main__":
     import os
     from dotenv import load_dotenv
     import psycopg
-    
+
     load_dotenv()
-    
+
     # Hand-written, in the walker's shape. Testing store.py alone — if the
     # walker were involved, a failure here could be either module's fault.
     fake_file = {
@@ -306,8 +308,8 @@ if __name__ == "__main__":
         "line_count": 125,
         "content": "const express = require('express');\n",
     }
-    
-    
+
+
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         prepare_connection(conn)
 
@@ -337,4 +339,3 @@ if __name__ == "__main__":
         mark_job_completed(conn, job_id, "success")
         print("indexed at c3184a5, job closed")
 
-    
