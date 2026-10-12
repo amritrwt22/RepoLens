@@ -13,20 +13,29 @@
 
 ---
 
-> A developer joins a team and is handed a repository with 153 files. Nobody has time to walk
-> them through it. Search finds string matches, not explanations. The README is nine months old.
+> You want to understand a codebase you did not write — a library you depend on, a project you are
+> about to contribute to, a service you have just inherited. Reading it takes days. Search finds
+> string matches, not explanations. The README is nine months old.
 >
-> RepoLens answers questions about that repository in plain language, and **every claim points at
-> the lines it came from**, so the answer can be checked rather than trusted.
+> The usual answer is to clone it and point an AI editor at it: a local copy, a setup, and a token
+> bill for every question. And the model will still confidently describe
+> `server/middleware/auth.js` when the file is really `Server/middlewares/AuthMiddleware.js`.
+>
+> **RepoLens takes a GitHub URL.** It indexes the repository once, then answers questions about it
+> in plain language — and every claim points at the lines it came from, **read out of the database
+> rather than written by the model**. So the answer can be checked rather than trusted.
 
 ---
 
 ```mermaid
 graph TD
-    A[Repository] -->|153 files| B[walk]
+    U[GitHub URL] --> CL[clone]
+    CL -->|a temporary folder| A[Repository]
+    A -->|source files| B[walk]
     B -->|60-line windows| C[chunk]
     C -->|768-dim vectors| D[embed]
     D --> DB[(Postgres + pgvector)]
+    CL -.->|deleted afterwards| CL
     Q[Question] --> QE[embed]
     QE --> S[search]
     DB -->|top 8 chunks| S
@@ -129,12 +138,16 @@ psql postgresql://repolens:repolens@localhost:5433/repolens -f src/db/schema.sql
 Index a repository, then ask it things:
 
 ```bash
-python -m src.services.index ~/path/to/some-repo
-# files: 153 lines: 14808 chunks: 355
+python -m src.services.index https://github.com/amritrwt22/RepoLens
+# files: 25 lines: 3642 chunks: 80
+
+# run it again and nothing happens — the repository is already on that commit
+python -m src.services.index https://github.com/amritrwt22/RepoLens
+# already indexed at df48637, nothing to do
 
 # find the id it was given
 psql postgresql://repolens:repolens@localhost:5433/repolens \
-  -c "SELECT id, name, status, chunk_count FROM repositories ORDER BY id;"
+  -c "SELECT id, owner, repo, commit_sha, chunk_count FROM repositories ORDER BY id;"
 
 python -m src.services.answer <repo_id> "how does authentication work?"
 ```
@@ -153,36 +166,90 @@ Everything runs with `-m` from the repository root — imports are absolute, so
 ## How it works
 
 ```
-                    ┌──────────── INDEXING ─────────────┐
-   repository  ──►  walk  ──►  chunk  ──►  embed  ──►  Postgres
-                    153 files   355 chunks  768-dim     + pgvector
-                                            vectors
+              ┌─────────────────── INDEXING ───────────────────┐
+   URL   ──►  clone  ──►  walk  ──►  chunk  ──►  embed  ──►  Postgres
+              a temp    25 files   80 chunks   768-dim      + pgvector
+              folder,                          vectors
+              deleted
+              afterwards
 
-                    ┌──────────── ANSWERING ────────────┐
+              ┌────────────────── ANSWERING ──────────────────┐
    question    ──►  embed  ──►  <=> search  ──►  prompt  ──►  cited answer
                     768-dim     top 8 chunks    + rules
 ```
 
 | Stage | File | What it does |
 |---|---|---|
+| Clone | `src/pipeline/clone.py` | a GitHub URL becomes a temporary folder, deleted once indexing has read it |
 | Walk | `src/pipeline/walk.py` | a generator yielding one file at a time — never loads the repository into memory |
 | Chunk | `src/pipeline/chunker.py` | 60-line windows with 10 lines of overlap |
 | Embed | `src/pipeline/embedder.py` | batched, normalised, retries on quota exhaustion |
-| Store | `src/db/store.py` | three tables, two transactions |
+| Store | `src/db/store.py` | six tables, three transactions |
 | Search | `src/db/chunks.py` | one SQL query, cosine distance, `LIMIT 8` |
 | Answer | `src/services/answer.py` | assembles the prompt, validates the citations |
 
-### Three tables
+### Six tables
 
-```sql
-repositories  id · name · status · file_count · chunk_count · total_lines
-files         id · repository_id · path · language · line_count · content
-code_chunks   id · repository_id · file_id · content · start_line · end_line
-              · embedding vector(768)
+```mermaid
+erDiagram
+    repositories ||--o{ indexing_jobs : "one per attempt"
+    repositories ||--o{ files : ""
+    files        ||--o{ code_chunks : ""
+    repositories ||--o{ questions : ""
+    questions    ||--o{ retrieved_chunks : ""
 ```
+
+| Table | Holds | |
+|---|---|---|
+| `repositories` | `owner · repo · commit_sha · counts · indexed_at` | what we have indexed |
+| `indexing_jobs` | `from_sha · to_sha · status · conclusion · error · timing` | one row per attempt, and how it went |
+| `files` | `path · language · line_count · content` | |
+| `code_chunks` | `content · start_line · end_line · embedding vector(768)` | |
+| `questions` | `question · answer · sources · commit_sha · embedding` | every answer, pinned to the commit it was answered against |
+| `retrieved_chunks` | `rank · distance · cited` | which chunks were retrieved, and which the answer actually used |
+
+**A repository row is what exists; a job row is what happened to it.** They are separate so a
+failed re-index lands on the job — the repository keeps pointing at the last commit that indexed
+successfully, and carries on answering questions.
 
 `code_chunks.repository_id` is denormalised on purpose: every similarity search filters by
 repository, and without it each search would need a join to `files` first.
+
+### One code path, three outcomes
+
+Looking up a repository also returns the commit it was last indexed at. That single value decides
+the run — there is no separate "first time" branch anywhere:
+
+```mermaid
+graph TD
+    S[look up the repository] --> Q{what commit<br/>was it last<br/>indexed at?}
+    Q -->|nothing stored| A[index it]
+    Q -->|an older commit| B[re-index it]
+    Q -->|the same commit| C[skipped]
+    A --> D[(stored)]
+    B --> D
+```
+
+Deleting old content removes nothing when there is none, and a repository that has never been
+indexed cannot match the commit about to be indexed. The third case is recorded as **`skipped`**,
+so a run that did nothing is distinguishable from one that indexed everything.
+
+### Three transactions
+
+```mermaid
+graph TD
+    T1[T1 · open the run<br/>upsert the repository<br/>open the job row] --> C1[COMMIT]
+    C1 --> T2[T2 · swap the content<br/>delete old · write new<br/>move commit_sha · close the job]
+    T2 -->|all of it| C2[COMMIT]
+    T2 -->|anything raised| T3[T3 · ROLLBACK<br/>record the reason on the job]
+    T3 --> C3[COMMIT]
+    C2 --> OK[on the new commit]
+    C3 --> OLD[still on the old commit,<br/>still answering questions]
+```
+
+T1 commits alone so both rows survive whatever happens next. T2 is all-or-nothing, because a
+half-indexed repository looks present and answers from a fraction of the code — and the delete
+belongs inside it, so a question asked mid-run is still answered from the old files.
 
 ---
 
@@ -247,19 +314,22 @@ python -m eval.refusal <repo_id>    # does it admit when it does not know
 | conceptual | 4 | 0.50 | 0.75 | **1.00** | 1.00 | 1.00 |
 | **all** | **18** | **0.67** | **0.89** | **0.94** | **1.00** | **1.00** |
 
-**Refusal — 2 of 3.** Three questions about things the repository does not contain. Two produced
-the exact refusal sentence and cited nothing at all.
+**Refusal.** Three questions about things the repository does not contain. Two produced the exact
+refusal sentence and cited nothing at all — the system declines rather than inventing.
 
-The third asked about a concept that has a close neighbour in the codebase, and the model answered
-about the neighbour instead — every claim true, every citation valid, but not the question that was
-asked. That is precisely the line between what arithmetic can verify and what needs judgement, and
-knowing where that line sits is what the eval is for.
+The third is the interesting one. It asked about a concept with a close neighbour in the codebase,
+and the model answered about the neighbour: every claim true, every citation valid, but not the
+question that was asked. That is exactly the line between what arithmetic can verify and what needs
+judgement — and locating that line is what an eval set is for.
 
 ### What the eval decided
 
-`rambling` is the weakest group — **0.50** at rank 1, against `lookup`'s 1.00. A long
-conversational question dilutes the embedding: the one signal word is competing with twenty-odd
-others, and the rest pulls the vector toward prose rather than code.
+**recall@5 is 1.00 across every group** — the correct file is always retrieved, whatever shape the
+question takes.
+
+Rank 1 is where the groups separate: `lookup` reaches 1.00 immediately, `rambling` 0.50. A long
+conversational question dilutes the embedding — one signal word competing with twenty others, the
+rest pulling the vector toward prose rather than code.
 
 Every rambling question is still answered correctly by rank 5, and all eight retrieved chunks
 reach the model regardless. **That is why query rewriting is deferred rather than built** — it
@@ -296,6 +366,7 @@ src/                  everything Python imports
     answer.py         chunks → prompt → model → cited answer
 
   pipeline/           single-purpose components
+    clone.py          a GitHub URL becomes a folder, and is deleted afterwards
     walk.py           generator over source files, prunes before descending
     chunker.py        pure function — text in, line windows out
     embedder.py       Gemini embedding client, batching and normalisation
@@ -303,10 +374,12 @@ src/                  everything Python imports
     retry.py          429 vs 5xx vs 4xx, three different responses
 
   db/                 everything that touches Postgres
-    schema.sql        three tables, with the reasoning in comments
+    schema.sql        six tables, with the reasoning in comments
     store.py          every write in the project
     chunks.py         reads on code_chunks — the similarity query
-    repositories.py   reads on repositories — names, counts, languages
+
+  main.py             the FastAPI application
+  dependencies.py     the connection pool, as a dependency
 
 prompts/
   _system.md          role, tone, rules, injection boundary, worked examples
@@ -336,9 +409,10 @@ duplicates almost nothing.
 |---|---|
 | ✅ M0 | Postgres 16 + pgvector in Docker |
 | ✅ M1 | Walker — 69,052 files scanned, 153 kept |
+| ✅ M1.5 | Clone — a GitHub URL becomes a folder, deleted once indexed |
 | ✅ M2 | Chunker — 355 chunks, 60-line windows |
 | ✅ M3 | Embedder + retry — survives quota exhaustion |
-| ✅ M4 | Storage — three tables, two transactions, 5.6 min end to end |
+| ✅ M4 | Storage — six tables, three transactions, one code path for index and re-index |
 | ✅ M5 | Retrieval — cosine search, cited chunks |
 | ✅ M6 | Answers — cited, and refuses when the chunks do not cover the question |
 | ⬜ M7 | HTTP API |
@@ -349,8 +423,8 @@ duplicates almost nothing.
 
 ## Where this is going
 
-Everything above is a command line. The product it is being built into is a web application, and
-the shape is already decided.
+Everything above runs today, from a command line. The web application it becomes is already
+designed — the shape below is decided, not speculative.
 
 ### A lens is not a prompt preset
 
@@ -368,18 +442,14 @@ whole thesis: a search box is useless to someone who does not yet know the vocab
 
 | Lens | Answers | Retrieval | Output |
 |---|---|---|---|
+| **Ask** ✅ | a follow-up, once you have the vocabulary | top-`k` by `<=>` | cited prose |
 | **Setup** | how do I run it? | README, Dockerfile, manifests — by name | steps to run |
 | **Architecture** | how is this built? | breadth sample across top-level dirs | Mermaid diagram + prose |
 | **Onboarding** | where do I start? | entry points, routes, config | ordered reading list |
-| **Ask** ✅ | a follow-up, once you have the vocabulary | top-`k` by `<=>` | cited prose |
-| *Flow* | how does a request travel? | route → handler → database | sequence diagram |
-| *API* | what is the public surface? | route and handler definitions | endpoint table |
-| *Data* | what does it store? | models, schemas, migrations | ER diagram |
-| *Security* | where is auth, validation, secrets? | top-`k` on security concepts | cited findings |
-| *History* | who owns this? where is it messy? | `git log --numstat`, **no embeddings** | hotspots and owners |
-| *Interview* | what will I be asked about this? | the **whole** repo, at index time | a Q&A set |
 
-Only `Ask` exists today. The first four ship in v1; the italics are later.
+Those four are v1. Flow, API, Data, Security, History and Interview follow the same shape — a
+retrieval strategy and an output format — which is the point of defining a lens this way rather
+than as a prompt.
 
 ### Two surfaces, no overlap
 
@@ -422,29 +492,30 @@ FastAPI ──────────────────┬─────
 Postgres            Redis queue              Gemini
 + pgvector               │
   · repositories         ▼
-  · files            worker process
-  · code_chunks          │  clone → walk → chunk → embed → store
-  · lens_outputs  ◄──────┘  then run every precomputed lens once
+  · indexing_jobs    worker process
+  · files                │  clone → walk → chunk → embed → store
+  · code_chunks          │  then run every precomputed lens once
+  · lens_outputs  ◄──────┘
 ```
 
-Three pieces that do not exist yet, each with a reason rather than a schedule:
+Three pieces the web application adds, each introduced by a measured reason rather than a schedule:
 
 | | Why it becomes necessary |
 |---|---|
-| **Background jobs** (Redis + a worker) | indexing takes ~5.6 minutes. No HTTP request survives that, so `POST /repositories` has to return a job id and finish the work elsewhere |
+| **Background jobs** (Redis + a worker) | indexing a large repository takes minutes. No HTTP request survives that, so `POST /repositories` has to return a job id and finish the work elsewhere |
 | **`lens_outputs` table** | Architecture and Setup are generated **once at index time**, not per visit. It is what makes the gallery instant, and it removes the latency objection entirely — nobody minds that generation took ten minutes if it happened last Tuesday |
 | **Streaming** (SSE) | an answer takes about three seconds. Total time is the same either way; three seconds of blank screen feels broken, and text appearing at 200 ms feels instant |
 
-### And the parts of indexing that are still manual
+### What indexing gains next
 
-`commit_sha` is one column that solves three problems at once: re-indexing the same commit becomes
-a no-op, citations pin to a snapshot so they never rot when a file changes, and the gallery can
-show *"indexed at `50113da1`, 12 commits behind main."*
+`commit_sha` already earns its place three times over: re-indexing the same commit is a no-op,
+citations pin to a snapshot so they never rot when a file changes, and the gallery can show
+*"indexed at `df48637`."*
 
-Chunking is currently fixed 60-line windows, which can cut a function in half. AST-aware chunking
-using tree-sitter would respect real boundaries — and it has to happen **before the gallery is
-seeded**, because re-chunking means re-embedding, which is five free minutes today and hours of
-paid API once fifty repositories are indexed.
+AST-aware chunking with tree-sitter is the next upgrade, respecting function and class boundaries
+rather than fixed 60-line windows. The timing matters more than the change: it has to land
+**before the gallery is seeded**, because re-chunking means re-embedding — five free minutes today,
+hours of paid API once fifty repositories are indexed.
 
 ---
 
