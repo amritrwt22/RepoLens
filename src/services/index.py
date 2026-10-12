@@ -1,22 +1,23 @@
 # index.py - the orchestrator.
 #
-# walk -> chunk -> embed -> store, against one repository on disk.
-# Writes one repositories row, one files row per file, and one code_chunks row
-# per chunk with its 768-float embedding.
+# clone -> walk -> chunk -> embed -> store, against one GitHub repository.
+# Writes one repositories row, one indexing_jobs row per run, one files row per
+# file, and one code_chunks row per chunk with its 768-float embedding.
 #
 # Design notes at the bottom of this file.
 
 import os                        # os.environ — the process's environment variables
 import sys                       # sys.argv — the command line, as a list of strings
-from pathlib import Path         # handles ~, trailing slashes and relative paths
+from pathlib import Path         # wraps the clone's path string as a path object
 
 from dotenv import load_dotenv   # reads .env into os.environ 
 import psycopg                   # python to postgres driver
 
-from src.db.store import prepare_connection, store_repository, store_file, store_chunks, finish_repository, fail_repository
+from src.pipeline.clone import clone_repo
 from src.pipeline.walk import find_source_files
 from src.pipeline.chunker import chunk_text
 from src.pipeline.embedder import Embedder
+from src.db.store import prepare_connection, get_or_create_repository, start_job, delete_repository_content, store_file, store_chunks, mark_repository_indexed, mark_job_completed
 
 # A batch ends when either cap is hit. BATCH_SIZE limits how many chunks go in
 # one request; MAX_BATCH_CHARS limits the payload. The API's real limit is
@@ -30,34 +31,60 @@ from src.pipeline.embedder import Embedder
 BATCH_SIZE = 20
 MAX_BATCH_CHARS = 28_000
 
-def index_repository(conn, root):
+def index_repository(conn, root, owner, repo, sha):
     """Index one repository that already exists as a folder on disk.
 
     conn    an open psycopg connection. Handed in, so this function owns the
             transaction boundaries but not the connection's lifetime.
-    root    a Path to the folder. Not a URL, not a zip - whatever the source is
-            later (a GitHub clone, an extracted upload), it becomes a folder
-            first and this function does not change.
+    root    a Path to the folder, today a clone made by clone_repo. Not a URL,
+            not a zip - whatever the source becomes later, it is a folder by
+            the time it reaches here and this function does not change.
+    owner   "amritrwt22" - from the URL, not the folder name. A cloned folder
+            is called repolens_owner_repo_xxxx, which is not the repo name.
+    repo    "RepoLens"
+    sha     the commit the folder is sitting on. This run's to_sha, and what
+            commit_sha becomes if it succeeds.
 
-    Returns nothing. Writes rows, and leaves the repository row at 'ready' or
-    'failed'.
+    Returns nothing. Writes rows, and leaves the job row at 'success' or
+    'failure'.
 
     Steps:
-        1  create the repository row, commit it alone
+        1  upsert the repository, open the job row, commit them alone
+           - if the repo is already on this commit, close the job and stop
         2  for each file the walker yields:
                store the file row, keep its generated file_id
                chunk the file, stamp file_id onto each chunk
                append to the buffer; flush whenever it reaches BATCH_SIZE
         3  flush whatever is left in the buffer after the loop
-        4  fill in the counts, mark 'ready', commit
-        5  on any failure: roll back, mark 'failed' with the error, re-raise
+        4  fill in the counts and commit_sha, close the job, commit
+        5  on any failure: roll back, close the job as 'failure', re-raise
     """
-    name = root.name        # repo name
 
-    # Transaction 1: committed on its own, before any content work starts.
-    # If indexing fails later this row survives, so it can be marked 'failed'.
-    repo_id = store_repository(conn, name)
+
+    # Transaction 1: open the run. Committed on its own, before any content
+    # work starts, so both rows survive whatever happens later — after a
+    # failure the repository is still there and the job carries the reason.
+    #
+    # from_sha is the commit this repository was last indexed at, or None if it
+    # never has been. That single value is what lets one code path serve both
+    # cases: None falls through as a first index, an older sha as a re-index.
+    repo_id, from_sha = get_or_create_repository(conn, owner, repo)
+    job_id = start_job(conn, repo_id, from_sha, sha)
+
+    # We are already indexed at the latest commit, so there is nothing to
+    # update. The job is marked completed here, this transaction commits, and
+    # the function returns — T2 and T3 never run.
+    #
+    # 'skipped' rather than 'success' so a run that did nothing can be told
+    # apart from one that indexed the repository.
+    if from_sha == sha:
+        mark_job_completed(conn, job_id, "skipped")
+        conn.commit()
+        print(f"already indexed at {sha[:7]}, nothing to do")
+        return
+
     conn.commit()
+
     
     file_count = 0
     total_lines = 0
@@ -72,11 +99,13 @@ def index_repository(conn, root):
     
     
     # --------------------happy path : transaction 2--------------
-    # either the whole repo is chunked and embedded or not at all. 
-    # try path for indexing the complete repo successfully. 
-    # trans open at first store_file (when first execute takes place)
-    # ends at commit below after finish repository
+    # Either the whole repo is swapped or none of it is. The transaction opens
+    # at the delete below and ends at the commit after the job is closed.
     try:
+        # The delete is inside T2, so until the commit nobody sees it. A question
+        # asked mid-run is answered from the old files against the old commit_sha.
+        # On a first index this removes nothing.
+        delete_repository_content(conn, repo_id)
         
         # find_source_files is a GENERATOR - one file at a time, never all in repo.
         for file in find_source_files(root):
@@ -104,21 +133,24 @@ def index_repository(conn, root):
         if buffer:
             flush(conn, repo_id, buffer, embedder)
             
-        # Transaction 2 ends here, after storing all the chunk with their embeddings in db
-        # repo, files and chunks with embeddings are stored in db : all successfull
-        # now update the status from 'indexing' to 'ready' and upadte null columns in repository table and commit
-        finish_repository(conn, repo_id, file_count, chunk_count, total_lines)
+        # Transaction 2 ends here. The new content, the new commit_sha and the
+        # closed job all become visible in the same instant.
+        mark_repository_indexed(conn, repo_id, sha, file_count, chunk_count, total_lines)
+        mark_job_completed(conn, job_id, "success")
         conn.commit()
 
         print(f"files: {file_count} lines: {total_lines} chunks: {chunk_count}")
         
     # ------------ failure path: transaction 3---------------------------
-    # Anything raised above leaves transaction 2 ABORTED - postgres refuses
-    # every further statement until it ends. So : ROLLBACK (all content in files and chunks tables deleted for this repository), 
-    # then record the failure in the row created in transaction 1 in repository table's [error] column. And mark indexing status as 'failed'
+    # Anything raised above leaves transaction 2 ABORTED - postgres refuses every
+    # further statement until it ends. So ROLLBACK first: the half-written files
+    # and chunks go, and only then can a fresh transaction record what happened.
+    #
+    # This touches the job row only. The repository keeps its old commit_sha, so
+    # a repo that was answerable before a failed re-index is still answerable.
     except Exception as e:
         conn.rollback()
-        fail_repository(conn, repo_id, f"{type(e).__name__}: {e}")
+        mark_job_completed(conn, job_id, "failure", f"{type(e).__name__}: {e}")
         conn.commit()
 
         # Recording a failure is not handling it. Without this the process
@@ -131,7 +163,7 @@ def flush(conn, repo_id, buffer, embedder):
     """Embed one buffer of chunks and store them.
 
     conn      an open psycopg connection
-    repo_id   int, from store_repository
+    repo_id   int, from get_or_create_repository
     buffer    list of dicts, each:
                   {"start_line": 1, "end_line": 60,
                    "content": "<60 lines>", "file_id": 7}
@@ -166,28 +198,24 @@ def flush(conn, repo_id, buffer, embedder):
     store_chunks(conn, repo_id, buffer)
         
         
-    
-    
-
-    
+        
 if __name__ == "__main__":
-    # argv[0] is the script itself, so a real argument means len >= 2.
+    # sys.argv is the command line as a list. argv[0] is always the script
+    # itself, argv[1] the first real argument - so one element means none given.
     if len(sys.argv) < 2:
-        print("usage: python -m index <path-to-repo>")
+        print("usage: python -m src.services.index <github-url>")
         sys.exit(1)
 
-    # expanduser: ~ -> /Users/amrit    resolve: absolute, and ".." removed
-    root = Path(sys.argv[1]).expanduser().resolve()
-
-    if not root.is_dir():
-        print(f"not a directory: {root}")
-        sys.exit(1)
+    url = sys.argv[1]
 
     load_dotenv()                                    # .env -> os.environ
 
-    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        prepare_connection(conn)                     # teach it the vector type
-        index_repository(conn, root)
+    # The clone lives for the whole run and is deleted when this block ends,
+    # whether indexing succeeded or raised.
+    with clone_repo(url) as (path, owner, repo, sha):
+        with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+            prepare_connection(conn)                 # teach it the vector type
+            index_repository(conn, Path(path), owner, repo, sha)
 
 
 # =============================================================================
@@ -199,35 +227,79 @@ if __name__ == "__main__":
 # about the database; db/store.py knows nothing about the pipeline.
 #
 #
+# WHERE THE FOLDER COMES FROM
+#
+#   __main__ wraps all three transactions in clone_repo, so the clone exists
+#   for the whole run and is deleted on the way out - after a success, after a
+#   failure, and after the skip below. index_repository never sees a URL and
+#   never deletes anything; it is handed a folder that already exists.
+#
+#
 # THE THREE TRANSACTIONS
 #
-#   1  store_repository -> COMMIT
-#        The repository row is saved before any of the long work begins. If
-#        indexing dies five minutes later, a rollback discards the files and
-#        chunks - but this row is already committed, so it survives and can be
-#        marked 'failed'. Inside transaction 2 it would be discarded too, and
-#        there would be no trace the attempt ever happened.
+#   Row-by-row dry runs, including both failure paths:
+#   docs/18-repolens_design/schema-design.md -> "First index — flow",
+#   "Re-index — flow", "The contrast".
 #
-#   2  every file + every chunk + finish_repository -> COMMIT
-#        All the content, or none of it. A half-indexed repository is worse
-#        than no repository: it reports itself present and answers questions
-#        from a third of the code.
-#
-#   3  on failure: ROLLBACK -> fail_repository -> COMMIT -> raise
-#        Transaction 2 is aborted and refuses every statement, so the rollback
-#        has to come first. Only then can a fresh transaction record the error.
+#   One code path runs both a first index and a re-index. They differ only in
+#   what T1 finds: no commit_sha on the repository means first index, an
+#   existing one means re-index and becomes the job's from_sha.
 #
 #
-#        happy path                         failure path
-#        ----------                         ------------
-#        store_repository                   store_repository
-#        COMMIT              (1)            COMMIT              (1)
-#        files + chunks                     files + chunks ... boom
-#        finish_repository                  ROLLBACK        (2 discarded)
-#        COMMIT              (2)            fail_repository
-#        status = 'ready'                   COMMIT              (3)
-#                                           status = 'failed', error set
-#                                           raise
+#   T1  upsert the repository, open the job row -> COMMIT
+#
+#       These two rows are committed before the long work starts, so they
+#       survive whatever happens next. After a failure the repository row is
+#       still there and the job row carries the reason.
+#
+#       If the repository is already on this commit, the job is closed here as
+#       a success and the run ends - there is nothing to re-index.
+#
+#
+#   T2  delete the old content, write the new content, move commit_sha,
+#       close the job as success -> COMMIT
+#
+#       All of it or none of it. A half-indexed repository is worse than no
+#       repository: it reports itself present and answers questions from a
+#       third of the code.
+#
+#       The delete is inside this transaction. Until the commit nobody can see
+#       it, so a question asked mid-run is answered from the old files against
+#       the old commit_sha. The new files and the new commit_sha appear in the
+#       same instant.
+#
+#
+#   T3  on failure: ROLLBACK, close the job as failure -> COMMIT, raise
+#
+#       The rollback comes first: T2 is aborted and refuses every statement
+#       until it is rolled back. Only then can a fresh transaction record it.
+#
+#       This touches the job row only. The repository keeps its commit_sha, so
+#       a repo that was answerable before a failed re-index is still answerable
+#       after it.
+#
+#
+#        first index                  re-index                     failure
+#        -----------                  --------                     -------
+#        upsert repo (new row)        upsert repo (found)          upsert repo
+#        from_sha = NULL              from_sha = old sha           open job
+#        open job                     open job                     COMMIT      (1)
+#        COMMIT          (1)          COMMIT          (1)          delete old
+#        delete old (0 rows)          delete old content           files + chunks ... boom
+#        files + chunks               files + chunks               ROLLBACK    (2 gone)
+#        commit_sha = to_sha          commit_sha = to_sha          job failed, error set
+#        job success                  job success                  COMMIT      (3)
+#        COMMIT          (2)          COMMIT          (2)          raise
+#        now servable                 now on the new commit_sha    still on the old commit_sha
+#
+#
+#   NOT HANDLED: a hard kill (kill -9, SIGTERM, OOM) runs no python at all, so
+#   it skips T3 and leaves the job at 'in_progress' forever. It also skips
+#   clone_repo's cleanup, leaving the folder on disk.
+#
+#   Both need the same sweep, at deploy: jobs whose started_at is old get the
+#   'cancelled' conclusion, and repolens_* folders older than a few hours get
+#   deleted.
 #
 #
 # WHY MEMORY STAYS FLAT
