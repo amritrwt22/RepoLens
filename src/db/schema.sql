@@ -32,8 +32,10 @@ DROP TABLE IF EXISTS retrieved_chunks, questions, code_chunks,
 
 CREATE TABLE repositories (
     id          serial primary key,
-    owner       text not null,
+    owner       text not null,        -- as GitHub spells it, for display
     repo        text not null,
+    owner_norm  text not null,        -- lowercased; GitHub treats names as
+    repo_norm   text not null,        -- case-insensitive, so the key must too
 
     commit_sha  text,                 -- NULL = never indexed, nothing to answer from
     file_count  integer,              -- NULL = not known yet; 0 = a real empty repo
@@ -43,8 +45,10 @@ CREATE TABLE repositories (
     created_at  timestamptz not null default now(),
     indexed_at  timestamptz,          -- when the currently served index finished
 
-    UNIQUE (owner, repo)              -- one row per repo, and the lookup key for
-                                      -- GET /v1/repositories/{owner}/{repo}
+    UNIQUE (owner_norm, repo_norm)    -- one row per repo, and the lookup key for
+                                      -- GET /v1/repositories/{owner}/{repo}.
+                                      -- On the normalised pair, so /RepoLens and
+                                      -- /repolens cannot become two rows
 );
 
 -- One row per index attempt. status = where the run is, conclusion = how it ended.

@@ -57,7 +57,11 @@ def get_or_create_repository(conn, owner, repo):
 
     This is what handles two users indexing the same repo at the same moment.
     The check and the insert are one statement, so one of them creates the row and the other quietly gets nothing. As separate steps — read, then write —
-    both see it missing, both insert, and one dies on UNIQUE (owner, repo).
+    both see it missing, both insert, and one dies on UNIQUE (owner_norm, repo_norm).
+
+    The key is the lowercased pair because GitHub treats repository names as
+    case-insensitive - /amritrwt22/RepoLens and /amritrwt22/repolens are the same
+    repository. owner and repo keep their original spelling, for display.
 
     The SELECT returns the row whether it was just created or already existed.
     DO NOTHING returns no row on a conflict, so RETURNING cannot do this job.
@@ -65,7 +69,7 @@ def get_or_create_repository(conn, owner, repo):
     Both statements run in one transaction, so nothing can change the row
     between them.
 
-    Only owner and repo are written. commit_sha, the counts and indexed_at are
+    Only the four name columns are written. commit_sha, the counts and indexed_at are
     filled by mark_repository_indexed when indexing succeeds.
     """
     with conn.cursor() as cur:
@@ -73,11 +77,11 @@ def get_or_create_repository(conn, owner, repo):
         # is already there.
         cur.execute(
             """
-            INSERT INTO repositories (owner, repo)
-            VALUES (%s, %s)
-            ON CONFLICT (owner, repo) DO NOTHING
+            INSERT INTO repositories (owner, repo, owner_norm, repo_norm)
+            VALUES (%s, %s, lower(%s), lower(%s))
+            ON CONFLICT (owner_norm, repo_norm) DO NOTHING
             """,
-            (owner, repo),
+            (owner, repo, owner, repo),
         )
 
         # The row exists by now either way.
@@ -85,7 +89,7 @@ def get_or_create_repository(conn, owner, repo):
             """
             SELECT id, commit_sha
             FROM repositories
-            WHERE owner = %s AND repo = %s
+            WHERE owner_norm = lower(%s) AND repo_norm = lower(%s)
             """,
             (owner, repo),
         )
