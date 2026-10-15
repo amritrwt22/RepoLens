@@ -156,6 +156,17 @@ def index_repository(conn, root, owner, repo, sha):
         # Recording a failure is not handling it. Without this the process
         # exits 0 and a failed run looks like a successful one.
         raise
+
+    # Ctrl-C needs its own block: KeyboardInterrupt inherits from BaseException,
+    # not Exception, so the catch-all above never sees it. Without this the job
+    # stays 'in_progress' forever.
+    #
+    # 'cancelled' rather than 'failure' - nothing broke, someone stopped it.
+    except KeyboardInterrupt:
+        conn.rollback()
+        mark_job_completed(conn, job_id, "cancelled", "interrupted")
+        conn.commit()
+        raise
             
             
         
