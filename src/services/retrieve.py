@@ -4,7 +4,7 @@
 # embeds a question and searches for k nearest chunks. It owns no SQL and no API logic of its own -
 # it only decides the order things happen in.
 #
-# Run it:  python -m retrieve <repo_id> "<question>"
+# Run it:  python -m src.services.retrieve <repo_id> "<question>"
 
 import os                        # os.environ — the process's environment variables
 import sys                       # sys.argv — the command line, as a list of strings
@@ -28,10 +28,13 @@ def search(conn, embedder, repo_id, question, k=8):
       k         how many chunks to return
 
     OUT
-      list of k dicts, nearest first - exactly what search_chunks returns:
-        {"chunk_id": 64, "path": "Server/index.js",
-         "start_line": 1, "end_line": 60,
-         "content": "<the 60 lines>", "distance": 0.0689}
+      (query_vector, chunks)
+
+      query_vector  list of 768 floats - the question's embedding
+      chunks        list of k dicts, nearest first - what search_chunks returns:
+                      {"chunk_id": 64, "path": "Server/index.js",
+                       "start_line": 1, "end_line": 60,
+                       "content": "<the 60 lines>", "distance": 0.0689}
     """
     # embed_query uses CODE_RETRIEVAL_QUERY. The chunks in the table were
     # embedded with RETRIEVAL_DOCUMENT. Asymmetric on purpose - the same text
@@ -39,12 +42,15 @@ def search(conn, embedder, repo_id, question, k=8):
     # quietly worse with no error anywhere.
     query_vector = embedder.embed_query(question)
 
-    return search_chunks(conn, repo_id, query_vector, k)
+    # The vector goes back too, not just the chunks. questions.question_embedding
+    # stores it, and embedding the same question again would be a second API call
+    # for a number already computed.
+    return query_vector, search_chunks(conn, repo_id, query_vector, k)
 
 if __name__ == "__main__":
     # argv[0] is the script itself, so two real arguments means len >= 3.
     if len(sys.argv) < 3:
-        print('usage: python -m retrieve <repo_id> "<question>"')
+        print('usage: python -m src.services.retrieve <repo_id> "<question>"')
         sys.exit(1)
 
     repo_id = int(sys.argv[1])       # argv is always strings; the column is an integer
@@ -57,7 +63,8 @@ if __name__ == "__main__":
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         prepare_connection(conn)     # teach this connection the vector type
-        results = search(conn, embedder, repo_id, question)
+        # search returns (vector, chunks); only the chunks are printed here.
+        _, results = search(conn, embedder, repo_id, question)
 
     # results is a list of dicts - keys are listed in search()'s docstring.
     # Printed after the with block, so the connection is already closed.
@@ -78,5 +85,5 @@ if __name__ == "__main__":
 #
 # search() embeds with CODE_RETRIEVAL_QUERY while the stored chunks used
 # RETRIEVAL_DOCUMENT - asymmetric on purpose, and the wrong one raises no
-# error, it just makes results quietly worse. It returns k dicts, nearest
-# first: chunk_id, path, start_line, end_line, content, distance.
+# error, it just makes results quietly worse. It returns the query vector and
+# k dicts, nearest first: chunk_id, path, start_line, end_line, content, distance.

@@ -62,9 +62,11 @@ def run(conn, embedder, repo_id):
             if not question["files"]:
                 continue
 
+            # search returns (query_vector, chunks); the vector is only needed
+            # when an answer is stored, which the eval never does.
             # chunks: list of dicts, nearest first
             #   {"chunk_id", "path", "start_line", "end_line", "content", "distance"}
-            chunks = search(conn, embedder, repo_id, question["q"], K)
+            _, chunks = search(conn, embedder, repo_id, question["q"], K)
 
             lines.append(f"### {question['id']}")
             lines.append("")
