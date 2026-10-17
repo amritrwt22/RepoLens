@@ -8,7 +8,7 @@
 #   2  prompt     pipeline/prompter.py    those chunks + the question -> the prompt
 #   3  generate   pipeline/llm.py         the prompt -> the answer, with [1] markers
 #   4  cite       below, for now          the answer -> validated, linkable sources
-#   5  store      db/ans_store.py         the question, the answer, every chunk
+#   5  store      db/ask_store.py         the question, the answer, every chunk
 #
 # Around those it looks the repository up by name, checks whether this exact
 # question has been answered before, and on a miss stores what it produced.
@@ -17,18 +17,14 @@
 
 from src.pipeline.retriever import search
 from src.pipeline.prompter import load_prompt, prompt_version, combine_chunks_and_questions
+from src.pipeline.citations import REFUSAL, validate_citations, build_sources
 
-from src.db.ans_store import (
+from src.db.ask_store import (
     get_repository_by_name,
     get_cached_answer,
     store_question,
     store_retrieved_chunks,
-    github_url,
 )
-
-import logging
-import re
-logger = logging.getLogger(__name__)
 
 class AskError(Exception):
     """A question could not be answered. The parent of every failure on the ask
@@ -46,81 +42,6 @@ class RepositoryNotIndexed(AskError):
     """Submitted, but never successfully indexed - commit_sha is NULL, so there
     are no chunks to search. The caller shows the latest job's status."""
 
-# Must match the sentence in prompts/_system.md exactly.
-REFUSAL = "I don't have enough information in the available documents to answer this question."
-
-def validate_citations(text, k):
-    """Find the citation number in answer and discard impossible ones.
-    
-    IN
-      text  str - the model's reply, containing markers like [1] [4]
-      k     int - how many chunks were sent, so valid numbers are 1..k
-
-    OUT
-      set of ints - the valid numbers found, e.g. {1, 4}
-                    An empty set means the answer cited nothing at all.
-    """
-    # findall returns every match as a string, in order: ["1", "4", "9"]
-    found = re.findall(r"\[(\d+)\]", text) # () tells to capture digits only, else we get ["[1]", "[4]", "[9]"]
-    
-    valid = set()
-    
-    for marker in found:
-        number = int(marker)
-        
-        if 1 <= number <= k:
-            valid.add(number)
-        else:
-            logger.warning(
-                "fabricated citation [%d] - only %d chunks were sent", number, k
-            )
-        
-    if not valid and REFUSAL not in text:
-        logger.warning("answer cites nothing and is not a refusal - ungrounded")
-    
-    return valid
-
-def build_sources(owner, repo, commit_sha, chunks, cited):
-    """Turn citation numbers into the payload a reader sees.
-
-    IN   owner       str - "amritrwt22"
-         repo        str - "RepoLens"
-         commit_sha  str - the commit these chunks were indexed at
-         chunks      list of dicts, nearest first - what search() returns:
-                       {"chunk_id": int, "path": str, "start_line": int,
-                        "end_line": int, "content": str, "distance": float}
-         cited       set of ints - which numbers the answer used, {1, 3}
-
-    OUT  list of dicts, in citation order:
-           {"citation": int, "path": str, "start_line": int,
-            "end_line": int, "github_url": str}
-
-    Only the cited chunks. All k go to retrieved_chunks for analytics; these are
-    the ones the reader is shown.
-
-    No chunk content. This list is stored in questions.sources and returned whole
-    on every cache hit, so it holds what renders a citation and nothing more -
-    the code itself is already in code_chunks.
-    """
-    sources = []
-
-    # sorted() because cited is a set and has no order - the reader sees [1]
-    # before [3], so the list should match.
-    for number in sorted(cited):
-
-        # [1] means the FIRST chunk, which is chunks[0], so subtract one.
-        chunk = chunks[number - 1]
-
-        sources.append({
-            "citation": number,
-            "path": chunk["path"],
-            "start_line": chunk["start_line"],
-            "end_line": chunk["end_line"],
-            "github_url": github_url(owner, repo, commit_sha, chunk["path"],
-                                     chunk["start_line"], chunk["end_line"]),
-        })
-
-    return sources
 
 def answer(conn, embedder, llm, owner, repo, question, k=8, lens="ask"):
     """Answer one question about one repository, with citations.
@@ -232,6 +153,7 @@ def answer(conn, embedder, llm, owner, repo, question, k=8, lens="ask"):
     
 import sys
 import os
+import logging
 from dotenv import load_dotenv
 from src.pipeline.embedder import Embedder
 from src.pipeline.llm import Llm
