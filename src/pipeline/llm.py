@@ -1,12 +1,14 @@
-# pipeline/llm.py : the only module that calls a chat model.
+# pipeline/llm.py — ask pipeline, step 3: the prompt becomes an answer.
+#
+# The only module that calls a chat model.
 #
 # Sibling of embedder.py - both wrap an external API client, so both are
-# classes: one instance is built per process and passed down, never rebuilt
-# per call. building one per call would mean a new client and a new TLS handshake 
+# classes: one instance is built per process and passed down, never rebuilt per
+# call. Building one per call would mean a new client and a new TLS handshake
 # every question.
 #
 # Handed a finished prompt, returns the model's reply. It knows nothing about
-# repositories, chunks, or how the prompt was built - that is answer.py's job.
+# repositories, chunks, or how the prompt was built - that is prompter.py's job.
 
 
 from google import genai

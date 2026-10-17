@@ -1,10 +1,18 @@
-# retrieve.py : M5 orchestrator - a question in, cited chunks out.
+# retriever.py — ask pipeline, step 1: a question becomes the k nearest chunks.
 #
-# The mirror of index.py. That one walks, chunks, embeds and stores; this one
-# embeds a question and searches for k nearest chunks. It owns no SQL and no API logic of its own -
-# it only decides the order things happen in.
+# Two calls, in order:
+#   embed the question   CODE_RETRIEVAL_QUERY, not the document task type
+#   search by <=>        cosine distance against the stored chunk vectors
 #
-# Run it:  python -m src.services.retrieve <repo_id> "<question>"
+# Returns the embedding as well as the chunks. The vector is already paid for,
+# and questions.question_embedding stores it - computing it again would be a
+# second API call for the same number.
+#
+# It owns no SQL and no API logic: embedder.py holds the client, db/ask_store.py
+# holds the query.
+#
+# Run it:  python -m src.pipeline.retriever <repo_id> "<question>"
+
 
 import os                        # os.environ — the process's environment variables
 import sys                       # sys.argv — the command line, as a list of strings
@@ -13,7 +21,7 @@ from dotenv import load_dotenv   # reads .env into os.environ
 import psycopg                   # python to postgres driver
 
 from src.db.store import prepare_connection      # teaches one connection the vector type
-from src.db.chunks import search_chunks          # the <=> query
+from src.db.ask_store import search_chunks       # the <=> query
 from src.pipeline.embedder import Embedder       # question -> 768-float vector
 
 
@@ -50,7 +58,7 @@ def search(conn, embedder, repo_id, question, k=8):
 if __name__ == "__main__":
     # argv[0] is the script itself, so two real arguments means len >= 3.
     if len(sys.argv) < 3:
-        print('usage: python -m src.services.retrieve <repo_id> "<question>"')
+        print('usage: python -m src.pipeline.retriever <repo_id> "<question>"')
         sys.exit(1)
 
     repo_id = int(sys.argv[1])       # argv is always strings; the column is an integer

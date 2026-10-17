@@ -1,13 +1,22 @@
-# src/db/ans_store.py : the ask path's database layer.
+# src/db/ask_store.py : the ask path's database layer.
 #
-# One file because asking a question is one sequence, not three concerns:
+# One file because asking a question is one sequence, not four concerns:
 #
 #   R1  get_repository_by_name   which repo, and can it be asked about
 #   R2  get_cached_answer        have we answered this exact question before
-#   T1  store_answer             the one write - the question and its chunks
+#   R3  search_chunks            the <=> query - the k nearest chunks
+#   T1  store_question           the question, the answer and its citations
+#       store_retrieved_chunks   all k chunks, cited true or false
 #
-# R1 and R2 are plain SELECTs - nothing to roll back. Only T1 needs a
-# transaction, because it is two INSERTs that have to land together.
+#       normalise_question       the form R2 and T1 both key on. One function,
+#                                because if the two normalised differently
+#                                nothing would ever match and nothing would say so
+#
+# R1, R2 and R3 are plain SELECTs - nothing to roll back. Only T1 needs a
+# transaction, because its two INSERTs have to land together.
+#
+# R3 is handed a query VECTOR, never a question: embedding belongs to the
+# caller, which keeps every function here pure SQL and testable with no API key.
 #
 # NOTE: store.py calls itself the only module that writes to Postgres. That was
 # true until this file; T1 is the other writer.
@@ -147,31 +156,61 @@ def get_cached_answer(conn, repo_id, commit_sha, question, model, prompt_version
     # indistinguishable to the caller.
     return {"text": row[0], "sources": row[1]}
 
-def github_url(owner, repo, commit_sha, path, start_line, end_line):
-    """Build a permanent GitHub link to one chunk's lines.
 
-    IN   owner       "amritrwt22"
-         repo        "RepoLens"
-         commit_sha  the full 40-character sha the repo was indexed at
-         path        "src/pipeline/retry.py", relative to the repo root
-         start_line  1
-         end_line    60
+def search_chunks(conn, repo_id, query_vector, k=8):
+    """Find the k chunks in one repository closest to query_vector.
 
-    OUT  str
+    IN
+      conn          open psycopg connection, already prepare_connection'd
+      repo_id       int - which repository to search inside
+      query_vector  list of 768 floats, from embedder.embed_query()
+      k             how many chunks to return
 
-        https://github.com/amritrwt22/RepoLens/blob/df48637.../src/pipeline/retry.py#L1-L60
+    OUT
+      list of k dicts, nearest first:
+        {"chunk_id": 64, "path": "Server/index.js",
+         "start_line": 1, "end_line": 60,
+         "content": "<the 60 lines>", "distance": 0.0689}
 
-    The full sha rather than a branch name is what makes it permanent. /blob/main
-    points at whatever that file is today, so a citation would quietly start
-    pointing at the wrong lines the moment someone edits it. The sha freezes it.
-
-    Stored in questions.sources rather than rebuilt on every read, because that
-    column is returned whole on every cache hit. retrieved_chunks deliberately
-    does NOT store it - that table is read by analytics queries, so it keeps the
-    raw path and lines and derives the URL only if something asks.
+      Fewer than k dicts if the repository has fewer than k chunks.
     """
-    return (f"https://github.com/{owner}/{repo}/blob/{commit_sha}"
-            f"/{path}#L{start_line}-L{end_line}")
+    
+    # the conn owns the transaction (trnasaction begins with first cur.execute), ends with when with of conn is exited
+    # this with of cur just closes the cursor object that is used for running statements on psql
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id, f.path, c.start_line, c.end_line, c.content,
+            c.embedding <=> %s::vector AS distance
+            
+            FROM code_chunks c
+            JOIN files f ON c.file_id = f.id
+            WHERE c.repository_id = %s
+            ORDER BY distance
+            LIMIT %s
+            """,
+            (query_vector, repo_id, k),
+        )
+        
+        # fetchall() must run before the cursor closes. It returns a LIST OF
+        # TUPLES, one per row, columns in SELECT order:
+        #   (id, path, start_line, end_line, content, distance)
+        rows = cur.fetchall()
+        
+        # Turn each tuple into a dict so callers use names, not row[i]
+        result = []
+        for row in rows:
+            result.append({
+                "chunk_id": row[0],
+                "path": row[1],
+                "start_line": row[2],
+                "end_line": row[3],
+                "content": row[4],
+                "distance": row[5],
+            })
+        
+        return result
+
 
 def store_question(conn, repo_id, commit_sha, question, question_embedding,
                    answer_text, sources, model, prompt_version):

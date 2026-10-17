@@ -1,42 +1,30 @@
 # answer.py : question in, cited answer out.
 #
-# The third orchestrator. index.py walks and stores, retrieve.py searches,
-# this one turns the chunks retrieve.py found into a written answer.
+# The orchestrator for the ask path. index.py is the one for indexing; this is
+# its mirror, and like that one it assembles nothing itself - it calls the five
+# pipeline steps in order and owns the transaction boundary.
 #
-# It computes little itself. It assembles 2 strings:
-#   contents            the user's question + the chunks retrieved from the db
-#   system_instruction  the rules and the lens task, read from prompts/
+#   1  search     pipeline/retriever.py   the question -> the k nearest chunks
+#   2  prompt     pipeline/prompter.py    those chunks + the question -> the prompt
+#   3  generate   pipeline/llm.py         the prompt -> the answer, with [1] markers
+#   4  cite       below, for now          the answer -> validated, linkable sources
+#   5  store      db/ask_store.py         the question, the answer, every chunk
 #
-# sends them to the model, and checks what comes back.
-#
-# Around that it owns the ask path: look the repository up by name, check
-# whether this exact question has been answered before, and on a miss store the
-# answer and every chunk that was retrieved for it.
-#
-# The wording lives in prompts/, the search in retrieve.py, the API call in
-# pipeline/llm.py, and every SQL statement in db/ans_store.py.
+# Around those it looks the repository up by name, checks whether this exact
+# question has been answered before, and on a miss stores what it produced.
 #
 # Run it:  python -m src.services.answer amritrwt22 RepoLens "<question>"
 
-from src.services.retrieve import search
-from pathlib import Path   # lets us build file paths without string juggling
-import hashlib   # sha256, for turning the prompt text into a version string
-from src.db.ans_store import (
+from src.pipeline.retriever import search
+from src.pipeline.prompter import load_prompt, prompt_version, combine_chunks_and_questions
+from src.pipeline.citations import REFUSAL, validate_citations, build_sources
+
+from src.db.ask_store import (
     get_repository_by_name,
     get_cached_answer,
     store_question,
     store_retrieved_chunks,
-    github_url,
 )
-
-# prompts/ sits at the repo root, this file is two levels down in src/services,
-# so walk up twice. Built from __file__ rather than a relative path, so it
-# resolves the same whichever directory the command is run from.
-PROMPTS = Path(__file__).parent.parent.parent / "prompts"
-
-import logging
-import re
-logger = logging.getLogger(__name__)
 
 class AskError(Exception):
     """A question could not be answered. The parent of every failure on the ask
@@ -54,193 +42,6 @@ class RepositoryNotIndexed(AskError):
     """Submitted, but never successfully indexed - commit_sha is NULL, so there
     are no chunks to search. The caller shows the latest job's status."""
 
-def load_prompt(lens="ask"):
-    """Read the system instruction for one lens.
-
-    IN
-      lens  str - which lens. "ask" reads prompts/ask.md
-
-    OUT
-      str - _system.md and the lens file joined with a blank line between.
-            The whole string is sent to the model as system_instruction.
-    """
-    
-    shared = (PROMPTS/ "_system.md").read_text()
-    task = (PROMPTS/ f"{lens}.md").read_text()
-    
-    return shared + "\n\n" + task
-
-
-def prompt_version(prompt_text):
-    """Turn the prompt text into a version string for the cache key.
-
-    IN   prompt_text  str - the combined prompt, from load_prompt()
-    OUT  str  - 64 hex characters, e.g. "ae7ec60dad4a22200195c0412ecbca2b33bc9be43282022a1ac71d8aa4f7f595"
-
-    Stored on every questions row and part of the cache key, so that editing a
-    prompt invalidates the answers it produced. 
-
-    Per-lens falls out for free: load_prompt("ask") returns _system.md + ask.md,
-    load_prompt("setup") returns _system.md + setup.md. Different strings,
-    different hashes. Editing one lens never invalidates another.
-
-    sha256 rather than md5 only because linters flag md5 - nothing here is
-    security-sensitive. 
-    """
-    # hashing works on bytes, not str. encode() gives UTF-8 bytes - the b prefix
-    # marks them, and python prints readable ASCII as letters rather than numbers.
-    #     'hello'  ->  b'hello'      which is [104, 101, 108, 108, 111]
-    data = prompt_text.encode()
-    
-    # sha256() returns a hash object - .hexdigest() is what produces the digest.
-    #     b'hello'  ->  <sha256 HASH object>
-    hasher = hashlib.sha256(data)
-    # hashlib is a module and sha256 a function inside it. sha256 builds an object
-    # and hands it back, so hexdigest() used below is a method on that object.
-    
-    # the digest = output of hash(algo), sha256 outputs 256 bits hash,
-    # hexdigest() convert it into hexadecimal format. 1 hexadecimal unit can have 16 possible values(4 bits)
-    # so digest is 256/4 = 64 hexadecimal digits. 
-    #     <object>  ->  '2cf24dba5fb0a30e26e83b2ac5b9e29e...'
-    return hasher.hexdigest()
-    
-
-def format_chunks(chunks):
-    """Turn the retrieved chunks into numbered <chunk> blocks for the prompt.
-    
-    IN
-      chunks  list of dicts from retrieve.search(), nearest first:
-              {"chunk_id": 64, "path": "Server/index.js",
-               "start_line": 1, "end_line": 60,
-               "content": "<the lines>", "distance": 0.2523}
-
-    OUT
-      str - one block per chunk, numbered from 1, separated by blank lines:
-
-              <chunk id="1" path="Server/index.js" lines="1-60">
-              <the lines>
-              </chunk>
-              ...2 line gap...
-              <next chunk> so on...
-            The id is the number the model cites. It is the position in this
-            list, NOT chunk_id - a gap-free 1..k has no plausible wrong values.
-    """
-    
-    blocks = []
-    number = 1
-    # Order is left exactly as search() returned it - nearest first - so [1] is
-    # the closest match and the numbers match the ranking.
-    for chunk in chunks:
-        blocks.append(
-            f'<chunk id="{number}" path="{chunk["path"]}" lines="{chunk["start_line"]}-{chunk["end_line"]}">\n'
-            f'{chunk["content"]}\n'
-            f'</chunk>'
-        )
-        number+=1
-        
-    # join glues the list into one string with a blank line between blocks.
-    return "\n\n".join(blocks)
-
-def combine_chunks_and_questions(question, chunks):
-    """Assemble the user half of the prompt.
-
-    IN
-      question:  str - what the reader asked
-      chunks:    list of dicts from retrieve.search(), nearest first
-
-    OUT
-      chunks+ques: - the formatted chunk blocks, then the question. Sent to the model
-                as `contents`. The rules go separately, as system_instruction.
-
-                CHUNKS
-                <chunk id="1" ...>
-                ...
-                </chunk>
-
-                QUESTION
-                how does retry decide how long to wait?
-    """
-    # Chunks first, question last. A model reads the start and end of a prompt
-    # most carefully and the middle least, so the chunks and the question each
-    # sit in one of the two strong positions.
-    
-    return "CHUNKS\n" + format_chunks(chunks) + "\n\nQUESTIONS\n" + question
-
-# Must match the sentence in prompts/_system.md exactly.
-REFUSAL = "I don't have enough information in the available documents to answer this question."
-
-def validate_citations(text, k):
-    """Find the citation number in answer and discard impossible ones.
-    
-    IN
-      text  str - the model's reply, containing markers like [1] [4]
-      k     int - how many chunks were sent, so valid numbers are 1..k
-
-    OUT
-      set of ints - the valid numbers found, e.g. {1, 4}
-                    An empty set means the answer cited nothing at all.
-    """
-    # findall returns every match as a string, in order: ["1", "4", "9"]
-    found = re.findall(r"\[(\d+)\]", text) # () tells to capture digits only, else we get ["[1]", "[4]", "[9]"]
-    
-    valid = set()
-    
-    for marker in found:
-        number = int(marker)
-        
-        if 1 <= number <= k:
-            valid.add(number)
-        else:
-            logger.warning(
-                "fabricated citation [%d] - only %d chunks were sent", number, k
-            )
-        
-    if not valid and REFUSAL not in text:
-        logger.warning("answer cites nothing and is not a refusal - ungrounded")
-    
-    return valid
-
-def build_sources(owner, repo, commit_sha, chunks, cited):
-    """Turn citation numbers into the payload a reader sees.
-
-    IN   owner       str - "amritrwt22"
-         repo        str - "RepoLens"
-         commit_sha  str - the commit these chunks were indexed at
-         chunks      list of dicts, nearest first - what search() returns:
-                       {"chunk_id": int, "path": str, "start_line": int,
-                        "end_line": int, "content": str, "distance": float}
-         cited       set of ints - which numbers the answer used, {1, 3}
-
-    OUT  list of dicts, in citation order:
-           {"citation": int, "path": str, "start_line": int,
-            "end_line": int, "github_url": str}
-
-    Only the cited chunks. All k go to retrieved_chunks for analytics; these are
-    the ones the reader is shown.
-
-    No chunk content. This list is stored in questions.sources and returned whole
-    on every cache hit, so it holds what renders a citation and nothing more -
-    the code itself is already in code_chunks.
-    """
-    sources = []
-
-    # sorted() because cited is a set and has no order - the reader sees [1]
-    # before [3], so the list should match.
-    for number in sorted(cited):
-
-        # [1] means the FIRST chunk, which is chunks[0], so subtract one.
-        chunk = chunks[number - 1]
-
-        sources.append({
-            "citation": number,
-            "path": chunk["path"],
-            "start_line": chunk["start_line"],
-            "end_line": chunk["end_line"],
-            "github_url": github_url(owner, repo, commit_sha, chunk["path"],
-                                     chunk["start_line"], chunk["end_line"]),
-        })
-
-    return sources
 
 def answer(conn, embedder, llm, owner, repo, question, k=8, lens="ask"):
     """Answer one question about one repository, with citations.
@@ -352,6 +153,7 @@ def answer(conn, embedder, llm, owner, repo, question, k=8, lens="ask"):
     
 import sys
 import os
+import logging
 from dotenv import load_dotenv
 from src.pipeline.embedder import Embedder
 from src.pipeline.llm import Llm
