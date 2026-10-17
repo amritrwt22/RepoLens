@@ -110,8 +110,8 @@ arithmetic: anything outside the range is dropped before it is ever displayed.
 
 | Failure | Caught by |
 |---|---|
-| `[9]` cited when only 8 chunks were sent | `src/services/answer.py` — arithmetic |
-| An answer with no citation at all | `src/services/answer.py` — arithmetic |
+| `[9]` cited when only 8 chunks were sent | `src/pipeline/citations.py` — arithmetic |
+| An answer with no citation at all | `src/pipeline/citations.py` — arithmetic |
 | A path that does not exist | **impossible by construction** |
 | `[1]` cited for a claim that `[4]` supports | the eval set — needs judgement |
 
@@ -186,7 +186,7 @@ Everything runs with `-m` from the repository root — imports are absolute, so
 | Embed | `src/pipeline/embedder.py` | batched, normalised, retries on quota exhaustion |
 | Store | `src/db/store.py` | six tables, three transactions |
 | Search | `src/db/ask_store.py` | one SQL query, cosine distance, `LIMIT 8` |
-| Answer | `src/services/answer.py` | assembles the prompt, validates the citations |
+| Answer | `src/services/answer.py` | orchestrates the five steps, owns the transaction |
 
 ### Six tables
 

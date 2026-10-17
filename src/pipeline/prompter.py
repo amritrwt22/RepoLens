@@ -18,11 +18,37 @@
 import hashlib                 # sha256, for turning the prompt text into a version string
 from pathlib import Path       # lets us build file paths without string juggling
 
-
 # prompts/ sits at the repo root, this file is two levels down in src/pipeline,
 # so walk up twice. Built from __file__ rather than a relative path, so it
 # resolves the same whichever directory the command is run from.
 PROMPTS = Path(__file__).parent.parent.parent / "prompts"
+
+# The shape the model must return, as a JSON schema (OpenAPI 3.0 flavour -
+# what Gemini's response_schema takes). Given to the API, not to the prompt.
+#
+#   type        "object"  - the reply is a {}, not a list or a bare string
+#   properties  the keys it has, each with its own nested schema
+#   required    which keys must be present. Both are, so result["citations"]
+#               can never raise KeyError
+#   description sent to the MODEL, not a comment - this is what tells it what
+#               belongs in each field
+#
+# The two fields:
+#   answer     the prose. Keeps its [1] markers, which the UI turns into links.
+#   citations  the chunk numbers used, as a list of ints - [1, 6]. This is the
+#              field that is stored, and the one citations.py validates.
+#              [] on a refusal.
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer":    {"type": "string",
+                      "description": "The answer, with [n] markers inline."},
+        "citations": {"type": "array", "items": {"type": "integer"},
+                      "description": "Every chunk id used. Empty on a refusal."},
+    },
+    "required": ["answer", "citations"],
+}
+
 
 def load_prompt(lens="ask"):
     """Read the system instruction for one lens.

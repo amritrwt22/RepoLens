@@ -112,7 +112,7 @@ def get_cached_answer(conn, repo_id, commit_sha, question, model, prompt_version
          commit_sha      the commit the repo is indexed at, from the same place
          question        str, exactly as typed - normalised in here
          model           which chat model would answer it
-         prompt_version  which prompt wording would answer it
+         prompt_version  which prompt wording and answer shape would answer it
 
     OUT  {"text": str, "sources": list}   a hit
          None                             a miss
@@ -224,7 +224,7 @@ def store_question(conn, repo_id, commit_sha, question, question_embedding,
          answer_text         what the model wrote, with [1] [2] still in it
          sources             list of dicts, from build_sources - goes to jsonb
          model               e.g. "gemini-3.5-flash-lite"
-         prompt_version      the hash of the prompt files
+         prompt_version      the hash of the prompt files and the answer schema
 
     OUT  int   the new id - this request wrote the row
          None  somebody else wrote it first already, so we dont write again

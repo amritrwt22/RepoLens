@@ -6,8 +6,8 @@
 #
 #   1  search     pipeline/retriever.py   the question -> the k nearest chunks
 #   2  prompt     pipeline/prompter.py    those chunks + the question -> the prompt
-#   3  generate   pipeline/llm.py         the prompt -> the answer, with [1] markers
-#   4  cite       below, for now          the answer -> validated, linkable sources
+#   3  generate   pipeline/llm.py         the prompt -> the answer and its citations
+#   4  cite       pipeline/citations.py   the citations -> validated, linkable sources
 #   5  store      db/ask_store.py         the question, the answer, every chunk
 #
 # Around those it looks the repository up by name, checks whether this exact
@@ -15,10 +15,20 @@
 #
 # Run it:  python -m src.services.answer amritrwt22 RepoLens "<question>"
 
-from src.pipeline.retriever import search
-from src.pipeline.prompter import load_prompt, prompt_version, combine_chunks_and_questions
-from src.pipeline.citations import REFUSAL, validate_citations, build_sources
+import json                    # dumps the schema to text, so sha256 can hash it
 
+from src.pipeline.retriever import search
+from src.pipeline.prompter import (
+    load_prompt,
+    prompt_version,
+    combine_chunks_and_questions,
+    ANSWER_SCHEMA,            # the shape llm.generate must return
+)
+from src.pipeline.citations import (
+    REFUSAL, 
+    validate_citations,
+    build_sources,
+)
 from src.db.ask_store import (
     get_repository_by_name,
     get_cached_answer,
@@ -103,13 +113,16 @@ def answer(conn, embedder, llm, owner, repo, question, k=8, lens="ask"):
     commit_sha = repository["commit_sha"]
     
     # R2. The cache is keyed on five things: the repository, the commit, the normalised
-    # question, the model, and the prompt wording. The first two came from R1,
+    # question, the model, and the prompt wording plus the schema. The first two came from R1,
     # the question is passed raw and normalised inside get_cached_answer.
     #     -> "gemini-3.5-flash-lite"
-    #     -> "ae7ec60dad4a22200195c0412ecbca2b33bc9be43282022a1ac71d8aa4f7f595"
+    #     -> "ddecad0a1f2bbdf8acc6291bb6d28bec3ed9ccd2cbad2eea7ff49afd84305488"
+
     system = load_prompt(lens)
     model = llm.model
-    version = prompt_version(system)
+    # The schema decides the answer as much as the wording does, so it is hashed
+    # with it. sort_keys because the same schema must always give the same string.
+    version = prompt_version(system + json.dumps(ANSWER_SCHEMA, sort_keys=True))
     
     # Returns the stored answer as a dict, or None when nobody has asked this before
     #     -> {"text": "...", "sources": [...]}   a hit
@@ -129,26 +142,32 @@ def answer(conn, embedder, llm, owner, repo, question, k=8, lens="ask"):
     # format the chunks and add ques at bottom : one string
     contents = combine_chunks_and_questions(question, chunks)
     
-    # give llm the contents and instructions to use contents and give response
-    text = llm.generate(contents, system) # text: one string - the model's reply, with [1] [2] markers in the prose.
+    # give llm the contents, the rules, and the shape to answer. 
+    # generate function calls api, get response as string, convert into dict
+    # and return the output, so result hold :
+    #     -> {"answer": "...[1]...", "citations": [1, 6]} dictionary.
+    result = llm.generate(contents, system, ANSWER_SCHEMA) 
+    
+    answer_prose = result["answer"]    # str - what the reader sees, with inline markers [1]..
+    citation_list = result["citations"] # list of ints - [1, 6]. Unchecked: the schema guarantees ints, not that they name real chunks
     
     # cited: set of ints, unordered, only numbers within 1..len(chunks).
-    cited = validate_citations(text, len(chunks))
+    validated_citations = validate_citations(citation_list, answer_prose, len(chunks))
     
-    sources = build_sources(owner, repo, commit_sha, chunks, cited)
+    sources = build_sources(owner, repo, commit_sha, chunks, validated_citations)
         
     # T1. Store the question, then the k chunks that were retrieved for it.
     #     -> an int, or None if another request stored this question first
-    question_id = store_question(conn, repo_id, commit_sha, question, query_vector, text, sources, model, version)
+    question_id = store_question(conn, repo_id, commit_sha, question, query_vector, answer_prose, sources, model, version)
     
     # question id is none if someone else already wrote this question, means the 
     # unique key of 5 values already was there, someone else won the race, no need to 
     # rewrite this ans either in ques table nor in retrieved chunks
     if question_id is not None:
-        store_retrieved_chunks(conn, question_id, chunks, cited)
+        store_retrieved_chunks(conn, question_id, chunks, validated_citations)
     
     conn.commit()
-    return {"text": text, "sources": sources}
+    return {"text": answer_prose, "sources": sources}
     
     
 import sys
