@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 from src.db.store import prepare_connection
 from src.pipeline.embedder import Embedder
-from src.services.retrieve import search
+from src.pipeline.retriever import search
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE / "questions.json"

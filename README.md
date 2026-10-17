@@ -155,7 +155,7 @@ python -m src.services.answer <repo_id> "how does authentication work?"
 Retrieval alone, without spending a generation call:
 
 ```bash
-python -m src.services.retrieve <repo_id> "how does authentication work?"
+python -m src.pipeline.retriever <repo_id> "how does authentication work?"
 ```
 
 Everything runs with `-m` from the repository root — imports are absolute, so
@@ -185,7 +185,7 @@ Everything runs with `-m` from the repository root — imports are absolute, so
 | Chunk | `src/pipeline/chunker.py` | 60-line windows with 10 lines of overlap |
 | Embed | `src/pipeline/embedder.py` | batched, normalised, retries on quota exhaustion |
 | Store | `src/db/store.py` | six tables, three transactions |
-| Search | `src/db/chunks.py` | one SQL query, cosine distance, `LIMIT 8` |
+| Search | `src/db/ask_store.py` | one SQL query, cosine distance, `LIMIT 8` |
 | Answer | `src/services/answer.py` | assembles the prompt, validates the citations |
 
 ### Six tables
