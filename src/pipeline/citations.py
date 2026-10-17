@@ -5,7 +5,7 @@
 # a citation cannot point at a file that does not exist.
 #
 # Three steps:
-#   validate_citations   find the [n] markers, drop any outside 1..k
+#   validate_citations   drop any number outside 1..k
 #   build_sources        turn the survivors into renderable entries
 #   github_url           the permanent link for one chunk's lines
 #
@@ -15,7 +15,6 @@
 #
 # Pure functions. No database, no API - testable with a string and a list of dicts.
 
-import re                 # findall, for pulling [1] [4] out of the answer text
 import logging
 
 logger = logging.getLogger(__name__)
@@ -23,24 +22,23 @@ logger = logging.getLogger(__name__)
 # Must match the sentence in prompts/_system.md exactly.
 REFUSAL = "I don't have enough information in the available documents to answer this question."
 
-def validate_citations(text, k):
-    """Find the citation number in answer and discard impossible ones.
-    
+def validate_citations(citations, text, k):
+    """Discard citation numbers that cannot refer to a chunk that was sent.
+
     IN
-      text  str - the model's reply, containing markers like [1] [4]
-      k     int - how many chunks were sent, so valid numbers are 1..k
+      citations  list of ints - the model's citations field, e.g. [1, 6]
+      text       str - the answer prose. Only read to tell a refusal apart
+                 from an ungrounded answer.
+      k          int - how many chunks were sent, so valid numbers are 1..k
 
     OUT
-      set of ints - the valid numbers found, e.g. {1, 4}
+      set of ints - the valid numbers found, e.g. {1, 6}
                     An empty set means the answer cited nothing at all.
     """
-    # findall returns every match as a string, in order: ["1", "4", "9"]
-    found = re.findall(r"\[(\d+)\]", text) # () tells to capture digits only, else we get ["[1]", "[4]", "[9]"]
-    
+   
     valid = set()
     
-    for marker in found:
-        number = int(marker)
+    for number in citations:
         
         if 1 <= number <= k:
             valid.add(number)
