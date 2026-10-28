@@ -6,11 +6,12 @@
 # lends them, call db/, shape the result, hand it back. No SQL here, and no RAG -
 # a gallery has nothing to orchestrate, so it never reaches services/.
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.dependencies import get_connection
-from src.db.repositories import list_repositories
+from src.db.repositories import list_repositories, get_repository
 from src.db.files import languages_by_repository
+from src.db.jobs import latest_job
 
 # the box this file's routes go in. main.py mounts it at /v1/repositories, so
 # the paths below are only what comes after that - "" is the gallery itself.
@@ -51,7 +52,6 @@ def list_repos(conn = Depends(get_connection)):
               "owner": "amritrwt22",
               "repo": "RepoLens",
               "file_count": 28,
-              "chunk_count": 104,
               "total_lines": 4802,
               "indexed_at": "2026-10-23T06:54:28.050783+00:00",
               "languages": [
@@ -76,8 +76,8 @@ def list_repos(conn = Depends(get_connection)):
 
     """
 
-    # 1. [{"id":, "owner":, "repo":, "file_count":, "chunk_count":,
-    #      "total_lines":, "indexed_at":}, ...]   newest first
+    # 1. [{"id":, "owner":, "repo":, "file_count":, "total_lines":,
+    #      "indexed_at":}, ...]   newest first
     repos = list_repositories(conn)
 
     # 2. the ids on their own, for the next query: [2, 1]
@@ -105,7 +105,6 @@ def list_repos(conn = Depends(get_connection)):
             "owner":       r["owner"],
             "repo":        r["repo"],
             "file_count":  r["file_count"],
-            "chunk_count": r["chunk_count"],
             "total_lines": r["total_lines"],
             "indexed_at":  r["indexed_at"],
             "languages":   langs,
@@ -113,3 +112,170 @@ def list_repos(conn = Depends(get_connection)):
 
     # 5. the object, not a bare list - see the docstring
     return {"repositories": gallery}
+
+
+# Two fields rather than one "status" word: one word cannot say "answerable"
+# and "last run failed" at once, which is why the schema splits them too.
+#
+# job.error is deliberately withheld - it holds raw exception text, down to
+# the provider's name and error codes.
+#
+# Three queries: the row, its languages, its latest job. The id ties them
+# together and never reaches the response.
+@router.get("/{owner}/{repo}", status_code=200)
+def get_repo(owner: str, repo: str, conn = Depends(get_connection)):
+    """One repository by name, in whatever state it is in.
+
+    REQUEST
+        GET /v1/repositories/{owner}/{repo}
+
+        owner and repo are matched case-insensitively, so /RepoLens and
+        /repolens are the same repository. No query string, no body.
+
+    RESPONSE  200 application/json
+
+        {
+          "owner": "amritrwt22",
+          "repo": "RepoLens",
+          "commit_sha": "3599ffdf66656e26d1af70fe5829f453c45541cf",
+          "file_count": 28,
+          "total_lines": 4802,
+          "indexed_at": "2026-10-23T06:54:28.050783+00:00",
+          "languages": [
+            { "language": "Python",   "line_count": 3299 },
+            { "language": "Markdown", "line_count": 1271 },
+            { "language": "SQL",      "line_count": 232  }
+          ],
+          "job": {
+            "status": "completed",
+            "conclusion": "success",
+            "finished_at": "2026-10-23T06:54:28.067889+00:00"
+          }
+        }
+
+        commit_sha is the gate: not null means the repository can be asked
+        about, null means nothing is indexed yet. job is the last indexing
+        run, whatever its outcome.
+
+        The two are independent - a repository can hold a good commit_sha and
+        a failed last run at once, staying answerable on the older commit:
+
+          commit_sha   job                     means
+          set          completed / success     ready
+          set          in_progress             ready, re-indexing now
+          set          completed / failure     ready, last update failed
+          null         in_progress             first index running
+          null         completed / failure     first index failed
+
+    STATUS CODES
+        200  the repository exists, in any state
+        404  no repository by that owner and name
+        503  PostgreSQL unreachable
+        500  an unhandled exception
+    """
+    
+    # 1. {"id":, "owner":, "repo":, "commit_sha":, "file_count":,
+    #     "total_lines":, "indexed_at":}   or None if no such repository
+    repository = get_repository(conn, owner, repo)
+    
+    # raise HTTPException sends a response: that status code, and
+    # {"detail": "..."} as the body. FastAPI catches this one class itself -
+    # any other exception is unhandled and becomes a raw 500.
+    #
+    # return at the bottom sends the body with the decorator's status_code.
+    if repository is None:
+        raise HTTPException(status_code=404, detail="no such repository")
+
+    # 2. {2: [("Python", 3299), ("SQL", 232)]} when the repo has files, or {}
+    #    when it has none - the dict is built from the rows, so no files means
+    #    no rows means no key. Never {2: []}.
+    #
+    #    .get(id, []) flattens both cases into a list, possibly empty.
+    #    languages[id] would raise KeyError on the second one
+    languages = languages_by_repository(conn, [repository["id"]]).get(repository["id"], [])
+    
+    # 3. {"status":, "conclusion":, "error":, "finished_at":}  or None
+    job = latest_job(conn, repository["id"])
+    
+    # 4. the response object. id is used above and dropped here, and each
+    #    ("Python", 3299) becomes {"language":, "line_count":}
+    langs = []
+    for language, line_count in languages:
+        langs.append({"language": language, "line_count": line_count})
+        
+    # 5. job.error is left out on purpose - it holds raw exception text
+    return {
+        "owner":       repository["owner"],
+        "repo":        repository["repo"],
+        "commit_sha":  repository["commit_sha"],
+        "file_count":  repository["file_count"],
+        "total_lines": repository["total_lines"],
+        "indexed_at":  repository["indexed_at"],
+        "languages":   langs,
+        "job": {
+            "status":      job["status"],
+            "conclusion":  job["conclusion"],
+            "finished_at": job["finished_at"],
+        } 
+    }
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# SENDING A STATUS CODE - express vs fastapi
+# ---------------------------------------------------------------------------
+#
+# EXPRESS - you hold `res`, so one mechanism sends every code
+#
+#     function getRepo(req, res) {
+#       const repo = findRepo(owner, name)
+#
+#       if (!repo)
+#         return res.status(404).json({ message: "no such repository" })
+#
+#       if (!repo.commit_sha)
+#         return res.status(409).json({ message: "not indexed yet" })
+#
+#       return res.status(200).json(repo)
+#     }
+#
+#   Every branch picks its own code. Nothing declared anywhere.
+#
+#
+# FASTAPI - no `res`. The return value IS the body, so success and failure
+# leave by different doors
+#
+#     @router.get("/{owner}/{repo}", status_code=200)
+#     def get_repo(owner: str, repo: str, conn = Depends(get_connection)):
+#
+#         repository = get_repository(conn, owner, repo)
+#
+#         if repository is None:
+#             raise HTTPException(status_code=404, detail="no such repository")
+#
+#         if repository["commit_sha"] is None:
+#             raise HTTPException(status_code=409, detail="not indexed yet")
+#
+#         return repository
+#
+#   Same two ifs. The difference is only how each one answers:
+#
+#     return    -> the body, with the decorator's code (200 here)
+#     raise     -> 404 {"detail": "no such repository"}
+#                  A response, not a crash. Exits immediately, so nothing
+#                  below needs an else
+#
+#
+# CODES THIS HANDLER NEVER WRITES
+#
+#     422   a bad request body. FastAPI checks it against the type hints
+#           before calling this function, and answers on its own
+#
+#     503   the database is unreachable. Every route fails the same way, so
+#           it is caught once by a global handler on app, not four times here
+#
+#     500   anything unhandled. Same - one global handler, not four
+
