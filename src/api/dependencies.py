@@ -1,4 +1,4 @@
-# src/dependencies.py : shared resources a request can ask for.
+# src/api/dependencies.py : shared resources a request can ask for.
 #
 # FastAPI's version of middleware — a function that returns a value, which a
 # handler asks for by name:
